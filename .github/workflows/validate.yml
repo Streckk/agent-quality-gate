@@ -1,0 +1,19 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar estructura, frontmatter y enlaces
+        run: bash tests/validate.sh
+      - name: Probar que el validador detecta errores
+        run: bash tests/validate_selftest.sh
