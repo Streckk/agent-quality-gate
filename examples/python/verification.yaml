@@ -1,0 +1,20 @@
+# EJEMPLO — no es una dependencia. Copiar a .agent/verification.yaml y adaptar.
+# Supone un proyecto con ruff, mypy y pytest configurados en pyproject.toml.
+version: 1
+max_fix_iterations: 2
+default_risk: low
+checks:
+  - id: lint
+    run: ruff check .
+    required: true
+  - id: types
+    run: mypy src
+    required: true
+  - id: unit
+    run: pytest -q
+    required: true
+review:
+  min_risk_for_review: medium
+  adversarial_at: high
+high_risk_paths:
+  - "src/*/auth/**"

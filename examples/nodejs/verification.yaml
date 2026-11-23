@@ -1,0 +1,33 @@
+# EJEMPLO — no es una dependencia. Copiar a .agent/verification.yaml y adaptar.
+# Supone un monorepo con pnpm y scripts lint/typecheck/test/build en package.json.
+version: 1
+max_fix_iterations: 2
+default_risk: medium
+checks:
+  - id: lint
+    run: pnpm lint
+    required: true
+  - id: typecheck
+    run: pnpm typecheck
+    required: true
+  - id: unit
+    run: pnpm test -- --run
+    required: true
+    timeout_seconds: 600
+  - id: build
+    run: pnpm build
+    required: true
+  - id: e2e
+    run: pnpm e2e
+    required: false
+    needs: [docker]
+review:
+  min_risk_for_review: medium
+  adversarial_at: high
+high_risk_paths:
+  - "apps/*/src/auth/**"
+  - "libs/tenancy/**"
+  - "**/migrations/**"
+forbidden_commands:
+  - "pnpm deploy"
+  - "pnpm db:migrate"
