@@ -34,10 +34,26 @@ check_commit() {
   if has_trailer_file "$CMD"; then
     decide deny "el mensaje del commit contiene un trailer o crédito de IA prohibido (Co-Authored-By, Generated-by…). Quítalo y repite el commit."
   fi
-  # 2. Mensaje desde archivo.
+  # 2. Mensaje por stdin (-F - / --file=-): solo es verificable si viene de un heredoc del propio
+  #    comando (cuyo texto ya se revisó) sin pipes ni redirecciones desde archivo.
+  if grep -Eq -- '(^|[[:space:]])(-F|--file)([[:space:]]+|=)-([[:space:];&|]|$)' "$CMD"; then
+    grep -q '<<' "$CMD" ||
+      decide ask "el mensaje del commit llega por stdin desde una fuente que este hook no puede revisar; confirma que no contiene trailers de IA."
+    grep -q '|' "$CMD" &&
+      decide ask "el mensaje del commit llega por stdin a través de un pipe; este hook no puede revisarlo. Confirma que no contiene trailers de IA."
+    LC_ALL=C grep -Eq '(^|[^<])<([^<]|$)' "$CMD" &&
+      decide ask "el mensaje del commit llega por stdin desde una redirección; este hook no puede revisarlo. Confirma que no contiene trailers de IA."
+  fi
+  # 3. Contenido dinámico ($VAR, $(…), `…`): el mensaje real no se conoce hasta ejecutar la shell.
+  #    Se admite el patrón habitual $(cat <<'EOF' … EOF), cuyo texto sí está en el comando.
+  sed 's/\$(cat <<-\{0,1\}/__QG_HEREDOC__/g' "$CMD" > "$QGH_TMP/.cmd-static"
+  if LC_ALL=C grep -Eq '\$[A-Za-z_{(]|`' "$QGH_TMP/.cmd-static"; then
+    decide ask "el comando del commit contiene contenido dinámico (\$VAR, \$(…) o \`…\`) que este hook no puede revisar; confirma que el mensaje no contiene trailers de IA."
+  fi
+  # 4. Mensaje desde archivo.
   if grep -Eq -- '(^|[[:space:]])(-F|--file)([[:space:]=]|$)' "$CMD"; then
     local f top; f=$(message_file_arg)
-    [ "$f" = "-" ] && return 0                            # stdin: el texto está en el comando (ya revisado)
+    [ "$f" = "-" ] && return 0                            # stdin con heredoc: ya verificado en el paso 2
     [ -n "$f" ] || decide ask "no se pudo determinar el archivo del mensaje (-F); revisa que no contenga trailers de IA antes de aprobar."
     case $f in /*) ;; *) f="$QGH_CWD/$f" ;; esac
     top=$(git -C "$QGH_CWD" rev-parse --show-toplevel 2>/dev/null) || top=""
@@ -45,18 +61,18 @@ check_commit() {
       "$top"/*) ;;
       *) decide ask "el archivo del mensaje (-F) está fuera del repositorio y no se revisa; confirma que no contiene trailers de IA." ;;
     esac
-    if [ -f "$f" ] && [ ! -L "$f" ]; then
+    if [ -f "$f" ] && [ ! -L "$f" ] && [ -r "$f" ]; then
       has_trailer_file "$f" && decide deny "el archivo del mensaje (-F) contiene un trailer o crédito de IA prohibido."
     else
-      decide ask "el archivo del mensaje (-F) no existe o no es un archivo regular; confirma su contenido."
+      decide ask "el archivo del mensaje (-F) no existe, no es un archivo regular o no se puede leer; confirma su contenido."
     fi
     return 0
   fi
-  # 3. Mensaje reutilizado de otro commit.
+  # 5. Mensaje reutilizado de otro commit.
   if grep -Eq -- '(^|[[:space:]])(-c|-C|--reuse-message|--reedit-message)([[:space:]=]|$)' "$CMD"; then
     decide ask "el commit reutiliza el mensaje de otro commit (-c/-C), que este hook no revisa; confirma que no contiene trailers de IA."
   fi
-  # 4. --amend sin mensaje nuevo: conserva el del commit actual.
+  # 6. --amend sin mensaje nuevo: conserva el del commit actual.
   if has_word --amend && ! grep -Eq -- '(^|[[:space:]])(-m|--message)([[:space:]=]|[^[:space:]])' "$CMD"; then
     if git -C "$QGH_CWD" --no-pager log -1 --format=%B > "$QGH_TMP/.head-msg" 2>/dev/null && has_trailer_file "$QGH_TMP/.head-msg"; then
       decide deny "--amend conservaría el mensaje actual, que contiene un trailer de IA prohibido; usa -m con un mensaje limpio."

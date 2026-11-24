@@ -31,7 +31,8 @@ chk deny "git -C dir commit con trailer" 'git -C /tmp/x commit -m "y
 
 Co-authored-by: a <a@b>"'
 chk none "mención sin dos puntos no es un trailer" 'git commit -m "docs: política sin Co-Authored-By ni créditos"'
-chk none "argumentos con espacios y caracteres especiales" 'git commit -m "fix: \"citas\" $HOME * ; | & y ñ"'
+chk none "argumentos con espacios y caracteres especiales (literales)" "git commit -m 'fix: \"citas\" * ; | & y ñ'"
+chk ask "mensaje con expansión de variable (\$HOME) → no verificable → ask" 'git commit -m "fix: $HOME"'
 
 printf 'feat: limpio\n' > "$R/msg-ok.txt"
 printf 'feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n' > "$R/msg-bad.txt"
@@ -50,6 +51,30 @@ fix
 
 Co-Authored-By: x <x@y>
 EOF"
+# Regresión (hueco detectado en la revisión): mensajes por stdin o generados dinámicamente
+chk ask "commit -F - sin heredoc (stdin desconocido) → ask" 'git commit -F -'
+chk ask "commit --file=- → ask" 'git commit --file=-'
+chk ask "pipe hacia commit -F - → ask" "printf 'fix: x\n' | git commit -F -"
+chk ask "cat archivo | commit --file - → ask" 'cat msg-ok.txt | git commit --file -'
+chk ask "redirección desde archivo a commit -F - → ask" 'git commit -F - < msg-ok.txt'
+chk ask "heredoc + pipe hacia commit -F - → ask (conservador)" "cat <<'EOF' | git commit -F -
+fix: x
+EOF"
+chk ask "sustitución de comandos con archivo en -m → ask" 'git commit -m "$(cat msg-ok.txt)"'
+chk ask "comillas invertidas en -m → ask" 'git commit -m "`cat msg-ok.txt`"'
+chk ask "variable en -m → ask" 'git commit -m "$MSG"'
+chk none "heredoc dentro de \$(cat <<EOF) limpio" "git commit -m \"\$(cat <<'EOF'
+fix: limpio
+EOF
+)\""
+chk ask "heredoc limpio + variable adicional → ask" "git commit -m \"\$(cat <<'EOF'
+fix: limpio
+EOF
+)\" -m \"\$EXTRA\""
+printf 'fix\n' > "$R/msg-noread.txt"; chmod 000 "$R/msg-noread.txt"
+if [ -r "$R/msg-noread.txt" ]; then ok "archivo ilegible: omitido (se ejecuta como root)"; else
+  chk ask "commit -F archivo sin permiso de lectura → ask" 'git commit -F msg-noread.txt'; fi
+chmod 600 "$R/msg-noread.txt"
 chk ask "commit -C reutiliza mensaje → ask" 'git commit -C HEAD~1'
 
 printf 'b\n' >> "$R/a.txt"; git -C "$R" add a.txt
