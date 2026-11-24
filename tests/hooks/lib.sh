@@ -1,3 +1,4 @@
+# shellcheck disable=SC2034  # SID_A, SID_B, HOOK_RC… los usan los scripts de prueba que cargan esta librería
 # Utilidades para probar los hooks con entradas JSON simuladas de Claude Code.
 # Reutiliza las de tests/core (repos temporales, configuración de Git aislada, aserciones).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/../core/lib.sh"

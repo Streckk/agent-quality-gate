@@ -32,6 +32,7 @@ qgh_field() {   # $1 = ruta (con . → _), $2 = tipo esperado (opcional)
   cat "$f"
 }
 
+# shellcheck disable=SC2034  # QGH_RUN_ID/QGH_CWD/QGH_PROJECT los usan los hooks que cargan esta librería
 # Inicializa: comprueba la desactivación global, parsea stdin, valida el evento y deriva el run-id.
 # Define QGH_RUN_ID, QGH_CWD (cwd del JSON) y QGH_PROJECT (raíz donde empezó la sesión).
 qgh_init() {   # $1 = evento esperado, $2 = rutas JSON adicionales

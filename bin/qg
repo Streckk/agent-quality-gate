@@ -818,17 +818,15 @@ qg_session_dir() {
   printf '%s' "$d"
 }
 
-# Lee el estado inicial de una sesión. Define SS_fp, SS_source, SS_at. 0 ok, 1 inexistente, 2 corrupto.
+# Lee el estado inicial de una sesión. Define SS_fp. 0 ok, 1 inexistente, 2 corrupto.
 qg_session_read_start() {
   local f=$1 line
-  SS_fp=""; SS_source=""; SS_at=""
+  SS_fp=""
   [ -e "$f" ] || return 1
   [ -f "$f" ] && [ ! -L "$f" ] || return 2
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
       fingerprint=*) SS_fp=${line#fingerprint=} ;;
-      source=*) SS_source=${line#source=} ;;
-      started_at=*) SS_at=${line#started_at=} ;;
     esac
   done < "$f"
   [[ $SS_fp =~ $QG_FP_RE ]] || return 2
@@ -937,8 +935,6 @@ qg_session_stop() {
 }
 
 # ---------------------------------------------------------------- qg hooks (activación voluntaria)
-
-QG_HOOK_NAMES="stop pretool"
 
 # Resuelve H_stop/H_pretool (on|off) y su origen. Precedencia: QG_DISABLE > QG_HOOKS > proyecto > off.
 qg_hooks_resolve() {
