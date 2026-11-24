@@ -13,6 +13,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - `evals/official/`: casos en formato `claude plugin eval` (aislamiento y rama sin plugin). La carga se verificó sin coste; no se ejecutaron porque falta `socat`.
 - `docs/agent-evals.md` y `docs/validacion-v0.2.0-evals.md`.
 
+### Corregido (CI de 39c7a99)
+- `qg` reintenta la huella si otro proceso crea o borra archivos durante `git add` ("unable to stat"); antes fallaba de forma intermitente.
+- `evals/evaluate.sh` no funcionaba con bash 3.2 (macOS): `case` dentro de `$(…)`.
+- Avisos de ShellCheck en `evals/` y en las pruebas.
+
 ### Corregido (hooks)
 - `PreToolUse`: `git commit -F -` sin heredoc, pipes, redirecciones, `$(…)`, comillas invertidas, `$VAR` y archivos ilegibles pasaban sin decisión. Ahora devuelven `ask`; el `deny` se mantiene si se ve un trailer.
 

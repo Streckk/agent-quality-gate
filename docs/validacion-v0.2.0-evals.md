@@ -85,6 +85,16 @@ Limitación declarada: la detección es conservadora (por ejemplo, `cd "$DIR" &&
 - El primer intento automatizado no fue válido: la detección por texto fallaba porque la interfaz no imprime espacios y la selección inicial de confianza era "No". Se descartó y se repitió.
 - `QG_DISABLE` en sesión interactiva no se probó; sí está cubierto en las pruebas deterministas y headless.
 
+## 6b. CI remota de `39c7a99` (run 45483117419): falló y se corrigió
+
+| Job | Causa | Corrección |
+|---|---|---|
+| `qg (macos-latest)` | `evals/evaluate.sh`: *syntax error near unexpected token `newline'* con **bash 3.2**, al analizar un `case` dentro de `$(…)`. El núcleo de `qg` y los hooks (incluido el parser JSON con el awk BWK de macOS) **sí pasaron** | `case` fuera de las sustituciones de comandos, también de forma preventiva en dos sitios de `bin/qg` |
+| `validate` | ShellCheck: SC2046 (`aggregate.sh`), SC2053 ×2 (globs intencionados en `evaluate.sh`) y SC2034 (variable sin uso en una prueba) | array de archivos; directivas justificadas; variable eliminada |
+| `qg (ubuntu-latest)` | prueba intermitente "huella con escrituras simultáneas". **Defecto real:** si otro proceso crea y borra un archivo mientras `git add` lo recorre, la huella fallaba (*unable to stat*), en un ~15 % de los casos en local | `qg` reintenta la instantánea (hasta 5 veces, con pausas crecientes); la prueba, endurecida, falla con el `qg` anterior (6/30) y pasa con el nuevo (0/30) |
+
+Los pasos de hooks y evals del job de Linux no llegaron a ejecutarse porque el paso del núcleo falló antes. En local pasan.
+
 ## 7. Pendiente
 
 - Ejecutar los casos oficiales y la comparación con y sin plugin (necesita `socat` y consentimiento sobre el coste).
