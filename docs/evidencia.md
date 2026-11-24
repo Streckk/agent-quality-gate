@@ -5,7 +5,7 @@
 No es un orquestador. Cada invocación de `qg run` ejecuta **un** comando. Decidir qué verificar sigue siendo trabajo de la skill (`/quality-gate`) o de la persona.
 
 ```text
-bin/qg            fingerprint | run | require | status | reject | show | gc | version
+bin/qg            fingerprint | run | require | status | reject | show | gc | version | session | hooks
 bin/qg-run        alias de `qg run`
 ```
 
@@ -41,7 +41,11 @@ qg status                            # ...deja la evidencia en stale
 | enlaces simbólicos | por su **destino** (texto del enlace), no por el contenido apuntado |
 | binarios | por contenido, igual que el texto |
 
-Cómo se calcula: se copia el índice (`cp -p`, que conserva el mtime para que siga funcionando la detección de entradas "racy" de Git) a un archivo temporal y se ejecuta `git add -A` y `git write-tree` con `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` temporal y el almacén real como alternativo. **No se modifica ni el índice ni `.git/objects` del repositorio** (lo comprueban las pruebas).
+Cómo se calcula:
+1. Se copia el índice a un archivo temporal con `cp -p`, que conserva el mtime para que siga funcionando la detección de entradas "racy" de Git.
+2. Se ejecuta `git add -A` y `git write-tree --missing-ok` con `GIT_INDEX_FILE` y un `GIT_OBJECT_DIRECTORY` temporal, **sin** el almacén real como alternativo.
+
+**No se modifica el índice ni `.git/objects` del repositorio, ni siquiera el mtime de los objetos** (lo comprueban las pruebas). Corrección v0.2.0-dev: con el almacén real como alternativo, git "refrescaba" (*freshen*) el mtime de los objetos existentes.
 
 Propiedades:
 

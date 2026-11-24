@@ -81,7 +81,23 @@ qg require --run-id mi-sesion lint unit       # requisitos y evidencia aislados 
 
 **Integrado en la skill:** si `qg` está disponible (en el `PATH` o junto a la skill instalada por symlink) y su interfaz es compatible, `/quality-gate` sigue el flujo `qg require → qg run → qg status` con un run-id por invocación, y el reporte se basa en esa evidencia. `valid` permite aprobar, pero no aprueba por sí solo. Sin `qg`, la skill se comporta como en v0.1 y lo indica. Ver [evidence-qg.md](skills/quality-gate/references/evidence-qg.md).
 
-**No hay hooks:** nada obliga todavía a usar `qg`. Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md). Validación en [docs/validacion-v0.2.0-dev.md](docs/validacion-v0.2.0-dev.md).
+Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md). Validación en [docs/validacion-v0.2.0-dev.md](docs/validacion-v0.2.0-dev.md).
+
+## Plugin y hooks opcionales (v0.2.0-dev, en desarrollo)
+
+El repositorio es también un **plugin de Claude Code** (`.claude-plugin/plugin.json`): skill + `qg` en el `PATH` + tres hooks **desactivados por defecto**.
+
+```bash
+QG_HOOKS=1 claude --plugin-dir /ruta/a/agent-quality-gate     # probar sin instalar; hooks solo en esta sesión
+```
+
+| Hook | Qué hace | Qué no hace |
+|---|---|---|
+| `SessionStart` | registra la huella inicial de la sesión | no inyecta contexto ni ejecuta nada |
+| `Stop` | si la sesión cambió código y la evidencia es `stale`/`missing`, pide **una vez** ejecutar `/quality-gate` | no bloquea con `failed`/`blocked`/`incomplete`, ni dos veces por la misma huella |
+| `PreToolUse` (Bash) | `deny` a commits con trailers de IA; `ask` para `git push`/`gh pr create` sin evidencia `valid` | nunca concede permisos (`allow`) |
+
+Los hooks no invocan modelos ni ejecutan pruebas. Comparten con la skill el run-id de sesión (`cc-<session_id>`). Se activan con `QG_HOOKS=1` o con el bloque `hooks:` de `.agent/verification.yaml`, y se desactivan con `QG_DISABLE=1`. Son **controles locales, no garantías**: lo obligatorio para todos los colaboradores va en CI y protección de ramas. Detalle: [docs/hooks.md](docs/hooks.md). Validación: [docs/validacion-v0.2.0-hooks.md](docs/validacion-v0.2.0-hooks.md).
 
 ## Integraciones opcionales
 
@@ -107,6 +123,8 @@ Nota sobre Codex (plugin 1.0.6): `/codex:review` y `/codex:adversarial-review` n
 bash tests/validate.sh            # estructura, frontmatter, enlaces, autoría
 bash tests/validate_selftest.sh   # el validador detecta errores conocidos
 bash tests/run_core_tests.sh      # pruebas deterministas de bin/qg (repos temporales)
+bash tests/run_hook_tests.sh      # pruebas de los hooks con entradas JSON simuladas
+claude plugin validate --strict . # validación oficial del plugin
 ```
 
 CI ejecuta ambos en cada push y PR (`.github/workflows/validate.yml`), sin secretos. `validate.sh` incluye reglas de regresión que impiden borrar las políticas corregidas tras la validación funcional.
@@ -125,10 +143,6 @@ Los commits de este repositorio van solo a nombre del propietario. No se añaden
 - La revisión de Codex es puntual y no determinista; no equivale a un sistema de evals.
 - El descubrimiento de comandos depende de que el repo los declare (manifiestos, Makefile, CI, config).
 
-## Hooks opcionales (propuesta para v2)
+## Hooks
 
-No incluidos en la v1. Candidatos:
-
-- **`Stop`**: bloquear el cierre del turno si hubo ediciones y no existe un reporte de quality-gate reciente. Bloqueo verificable: el hook devuelve `decision: block`.
-- **`PreToolUse` sobre Bash**: denegar comandos de `forbidden_commands` de `.agent/verification.yaml`. Bloqueo verificable: el comando no se ejecuta.
-- **`PreToolUse` sobre `git commit`**: rechazar mensajes con trailers de coautoría de IA.
+Implementados en v0.2.0-dev (ver arriba y [docs/hooks.md](docs/hooks.md)). `forbidden_commands` de `.agent/verification.yaml` **no** se aplica con hooks: para eso están los `permissions.deny` nativos de Claude Code.

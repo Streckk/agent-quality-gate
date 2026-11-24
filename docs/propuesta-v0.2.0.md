@@ -124,7 +124,11 @@ Modificar:
 
 ## Integración de hooks propuesta (siguiente iteración, sobre `qg`)
 
-> Revisada tras integrar `qg` con la skill (interfaz 2: requisitos y evidencia por sesión, `qg reject`). **No implementada.**
+> **Implementada** en v0.2.0-dev (ver [hooks.md](hooks.md) y [validacion-v0.2.0-hooks.md](validacion-v0.2.0-hooks.md)). Diferencias respecto a esta propuesta:
+> - `qg session stop` concentra la decisión de `Stop` (determinista y comprobable sin Claude). No hay `qg session mark` aparte: la marca se registra al bloquear.
+> - La activación por sesión es `QG_HOOKS=1|stop|pretool|0`; no se usa `qg hooks` para activar, solo para consultar (`qg hooks status`).
+> - El parser JSON es awk portable; no se requiere jq.
+> - `ask` en modo no interactivo (`-p`) se convierte en denegación (observado).
 
 Con la evidencia ya disponible, los hooks no necesitan guardar un estado de verificación propio: preguntan a `qg`. **Ningún hook invoca modelos**: ni Claude ni Codex. Solo ejecutan `qg` y `git`.
 

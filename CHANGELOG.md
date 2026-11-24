@@ -4,6 +4,24 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (plugin y hooks opcionales)
+- Plugin de Claude Code: `.claude-plugin/plugin.json` (sin licencia declarada; es decisión del propietario) y `hooks/hooks.json`. `claude plugin validate --strict` pasa.
+- Hooks, **desactivados por defecto** (`QG_HOOKS`, bloque `hooks:` de `.agent/verification.yaml`, `QG_DISABLE`):
+  - `SessionStart`: registra la huella inicial;
+  - `Stop`: un bloqueo por huella si hay `stale`/`missing`; deja terminar con `failed`/`blocked`/`incomplete`; respeta `stop_hook_active`; máximo 3 por sesión;
+  - `PreToolUse`: `deny` a trailers de IA en commits; `ask` en push/PR sin evidencia; nunca `allow`.
+- Parser JSON estricto en awk portable (`hooks/lib/json.awk`), sin jq, Node ni Python.
+- `qg` interfaz 3 (aditiva):
+  - `qg session id|start|info|stop` (run-id `cc-<session_id>` compartido por la skill y los hooks);
+  - `qg hooks status|enabled`.
+- La skill usa `qg session id` como run-id dentro de Claude Code.
+- Pruebas: `tests/hooks/` (190 aserciones), `tests/run_hook_tests.sh` en CI (Linux y macOS con bash 3.2) y ShellCheck sobre los hooks.
+- Escenarios reales con `--plugin-dir`: `tests/scenarios/make_hook_fixtures.sh` y `run_hooks_e2e.sh`.
+- `docs/hooks.md` y `docs/validacion-v0.2.0-hooks.md`.
+
+### Corregido
+- La huella actualizaba el mtime de objetos existentes en `.git/objects` (*freshen* de git sobre el almacén alternativo). Ahora no usa el almacén real (`write-tree --missing-ok`).
+
 ### Añadido (integración skill + `qg`)
 - Referencia `evidence-qg.md`:
   - detección de `qg` (`PATH` o junto a la skill) y compatibilidad (`qg version --json`, interfaz ≥ 2);
