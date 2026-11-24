@@ -65,4 +65,18 @@ expect_fail "bin/qg sin bit de ejecución"
 copy_repo; sed -i 's/no equivale a `PASS`/equivale a PASS/' "$tmp/r/skills/quality-gate/references/evidence-qg.md"
 expect_fail "regla 'valid no equivale a PASS' eliminada"
 
+# Plugin y hooks
+copy_repo; sed -i 's/"author"/"license": "MIT", "author"/' "$tmp/r/.claude-plugin/plugin.json"
+expect_fail "licencia declarada sin decisión del propietario"
+
+copy_repo; sed -i 's|\\"\${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\\"|${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh|' "$tmp/r/hooks/hooks.json"
+sed -i 's|\\"\${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\\"|${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh|; s|\\"\${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh\\"|${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh|' "$tmp/r/hooks/hooks.json"
+expect_fail "rutas de hooks sin comillas"
+
+copy_repo; printf '\nx=1; eval "y=$x"\n' >> "$tmp/r/hooks/stop.sh"
+expect_fail "eval introducido en un hook"
+
+copy_repo; chmod -x "$tmp/r/hooks/stop.sh"
+expect_fail "hook sin bit de ejecución"
+
 (( failures == 0 )) && echo "OK: selftest completo" || { echo "FALLÓ: $failures caso(s)" >&2; exit 1; }

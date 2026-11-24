@@ -17,7 +17,10 @@ for f in README.md CHANGELOG.md \
          skills/quality-gate/references/project-discovery.md \
          skills/quality-gate/references/report-format.md \
          skills/quality-gate/references/evidence-qg.md \
-         bin/qg bin/qg-run docs/evidencia.md tests/run_core_tests.sh; do
+         bin/qg bin/qg-run docs/evidencia.md tests/run_core_tests.sh \
+         .claude-plugin/plugin.json hooks/hooks.json hooks/session-start.sh hooks/stop.sh \
+         hooks/pre-tool-use.sh hooks/lib/common.sh hooks/lib/json.awk tests/run_hook_tests.sh \
+         docs/hooks.md; do
   [[ -f "$ROOT/$f" ]] && ok "existe $f" || fail "falta $f"
 done
 
@@ -27,8 +30,24 @@ for f in bin/qg bin/qg-run; do
   bash -n "$ROOT/$f" 2>/dev/null && ok "sintaxis $f" || fail "$f: error de sintaxis bash"
   [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
 done
-# Sin eval en los ejecutables (requisito de seguridad del ejecutor).
-for f in bin/qg bin/qg-run; do
+# Hooks: sintaxis y bit de ejecución
+for f in hooks/session-start.sh hooks/stop.sh hooks/pre-tool-use.sh; do
+  [[ -f "$ROOT/$f" ]] || continue
+  bash -n "$ROOT/$f" 2>/dev/null && ok "sintaxis $f" || fail "$f: error de sintaxis bash"
+  [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
+done
+# Manifiesto y hooks.json: estructura mínima sin dependencias (el validador oficial se usa aparte)
+if [[ -f "$ROOT/.claude-plugin/plugin.json" ]]; then
+  grep -q '"name"[[:space:]]*:[[:space:]]*"agent-quality-gate"' "$ROOT/.claude-plugin/plugin.json" && ok "plugin.json: name" || fail "plugin.json: falta name=agent-quality-gate"
+  grep -qi '"license"' "$ROOT/.claude-plugin/plugin.json" && fail "plugin.json: no declarar licencia sin decisión del propietario"
+fi
+if [[ -f "$ROOT/hooks/hooks.json" ]]; then
+  grep -q '"hooks"[[:space:]]*:' "$ROOT/hooks/hooks.json" && ok "hooks.json: envoltorio hooks" || fail "hooks.json: falta el envoltorio \"hooks\""
+  grep -q '\${CLAUDE_PLUGIN_ROOT}/hooks/[a-z-]*\.sh\\"' "$ROOT/hooks/hooks.json" && ok "hooks.json: rutas entrecomilladas" || fail "hooks.json: \${CLAUDE_PLUGIN_ROOT} sin comillas"
+fi
+
+# Sin eval en los ejecutables (requisito de seguridad del ejecutor y de los hooks).
+for f in bin/qg bin/qg-run hooks/session-start.sh hooks/stop.sh hooks/pre-tool-use.sh hooks/lib/common.sh; do
   if [[ -f "$ROOT/$f" ]] && grep -vE '^[[:space:]]*#' "$ROOT/$f" | grep -qE '(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)'; then
     fail "$f: usa eval"
   else
@@ -104,6 +123,7 @@ require evidence-qg.md   'qg reject'                    # exit 0 sin pruebas no 
 require evidence-qg.md   '--run-id <ID>'                # aislamiento entre sesiones
 require evidence-qg.md   'Modo sin `qg`'                # degradación a v0.1 sin simular evidencia
 require report-format.md 'qg status --run-id'           # el reporte se basa en la evidencia de qg
+require evidence-qg.md   'session id'                   # run-id compartido con los hooks (cc-<session_id>)
 grep -qF 'references/evidence-qg.md' "$ROOT/skills/quality-gate/SKILL.md" || fail "SKILL.md no enlaza evidence-qg.md"
 ok "reglas de regresión de la política"
 
