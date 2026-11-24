@@ -23,6 +23,7 @@ Funciona igual sobre código escrito por el usuario que sobre código generado p
 4. **Máximo 2 iteraciones de autocorrección** por defecto (configurable). Después: reporta el bloqueo.
 5. **Acciones sensibles requieren aprobación explícita**: despliegues, migraciones o borrados de datos, secretos, push, publicación, cambios en CI/permisos/hooks. Ver [guardrails](references/guardrails.md).
 6. **Corrige solo dentro del alcance** del cambio revisado. Fuera del alcance → anótalo como pendiente.
+7. **Si `qg` está disponible y es compatible, cada verificación se ejecuta con `qg run`** y el reporte se basa en `qg status`. Si no lo está, se usa el modo sin `qg` y se declara así. Ver [evidence-qg](references/evidence-qg.md).
 
 ## Protocolo
 
@@ -33,17 +34,22 @@ Lee [project-discovery](references/project-discovery.md). Determina:
 - Alcance: qué cambios se revisan (working tree, rama vs base, rutas indicadas).
 - Instrucciones del repo (`CLAUDE.md`, `AGENTS.md`, reglas de carpeta) y config opcional `.agent/verification.yaml`.
 - Verificaciones disponibles con su comando real y su origen.
-- Integraciones disponibles (Codex, Graphify) — comprobadas, no supuestas.
+- Integraciones disponibles (Codex, Graphify, `qg`) — comprobadas, no supuestas.
+- **`qg` (siempre, antes de verificar):** búscalo en el `PATH` **y** junto a esta skill; `qg` no tiene por qué estar en el `PATH`:
+  ```bash
+  command -v qg || ls -l "$(cd -P '<directorio base de esta skill>' && cd ../.. && pwd)/bin/qg"
+  ```
+  Si existe, lee [evidence-qg](references/evidence-qg.md) y sigue sus §1–3 (compatibilidad, run-id, `qg require`). Solo si no aparece en ninguno de los dos sitios, o no es compatible, usa el modo sin `qg`.
 - Nivel de riesgo (`low` | `medium` | `high`). El argumento `--risk` puede subirlo, nunca bajarlo por debajo de lo que exijan las señales de alto riesgo.
 
 ### 2. Verify
-Lee [feedback-loops](references/feedback-loops.md). Ejecuta las verificaciones seleccionadas, inspecciona resultados, diagnostica, corrige de forma acotada y reejecuta lo afectado, respetando el límite de iteraciones.
+Lee [feedback-loops](references/feedback-loops.md). Ejecuta las verificaciones seleccionadas (con `qg run` si está disponible), inspecciona la salida real, diagnostica, corrige de forma acotada y reejecuta lo afectado, respetando el límite de iteraciones. Un exit 0 sin pruebas ejecutadas no es `passed` (`qg reject`).
 
 ### 3. Review
 Lee [agent-evals](references/agent-evals.md). Decide si el riesgo exige revisión independiente, úsala si está disponible y **verifica cada hallazgo** antes de actuar. Con `--no-review` la fase queda `skipped (by user)`.
 
 ### 4. Report
-Emite el reporte con el formato de [report-format](references/report-format.md). El veredicto es `PASS` solo si todas las verificaciones obligatorias son `passed` sobre el código actual (huella de evidencia vigente) y no quedan hallazgos confirmados sin resolver. Si el usuario pidió solo Discover, el veredicto es `NOT VERIFIED`.
+Con `qg`, consulta antes `qg status --run-id <ID> --json` y basa en él la tabla de verificaciones (`valid` permite aprobar, no aprueba por sí solo). Emite el reporte con el formato de [report-format](references/report-format.md). El veredicto es `PASS` solo si todas las verificaciones obligatorias son `passed` sobre el código actual (huella de evidencia vigente) y no quedan hallazgos confirmados sin resolver. Si el usuario pidió solo Discover, el veredicto es `NOT VERIFIED`.
 
 ## Proporcionalidad
 

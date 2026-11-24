@@ -16,6 +16,7 @@ for f in README.md CHANGELOG.md \
          skills/quality-gate/references/guardrails.md \
          skills/quality-gate/references/project-discovery.md \
          skills/quality-gate/references/report-format.md \
+         skills/quality-gate/references/evidence-qg.md \
          bin/qg bin/qg-run docs/evidencia.md tests/run_core_tests.sh; do
   [[ -f "$ROOT/$f" ]] && ok "existe $f" || fail "falta $f"
 done
@@ -97,6 +98,13 @@ require agent-evals.md   'nothing to review'            # árbol limpio con exit
 require agent-evals.md   'servicio externo'             # privacidad del diff
 require feedback-loops.md 'PIPESTATUS'                  # exit code real tras pipes
 forbid  feedback-loops.md 'con `git stash`'             # no tocar el working tree del usuario
+# Integración con qg (v0.2.0-dev)
+require evidence-qg.md   'no equivale a `PASS`'          # qg status=valid no aprueba por sí solo
+require evidence-qg.md   'qg reject'                    # exit 0 sin pruebas no cuenta como passed
+require evidence-qg.md   '--run-id <ID>'                # aislamiento entre sesiones
+require evidence-qg.md   'Modo sin `qg`'                # degradación a v0.1 sin simular evidencia
+require report-format.md 'qg status --run-id'           # el reporte se basa en la evidencia de qg
+grep -qF 'references/evidence-qg.md' "$ROOT/skills/quality-gate/SKILL.md" || fail "SKILL.md no enlaza evidence-qg.md"
 ok "reglas de regresión de la política"
 
 # 5. Alcance de la v1: sin Rust ni motores propios

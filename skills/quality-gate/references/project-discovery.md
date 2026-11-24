@@ -53,6 +53,7 @@ Comprueba disponibilidad real, no la documentación:
 - **Codex**: ver [agent-evals](agent-evals.md#1-detectar-codex).
 - **Graphify**: `command -v graphify` o skill disponible en la sesión.
 - **Superpowers / frontend-design**: aparecen en la lista de skills de la sesión. Solo se mencionan; esta skill no las invoca por su cuenta.
+- **`qg`** (evidencia ejecutable): detección, compatibilidad (`qg version --json`, interfaz ≥ 2), run-id y `qg require` en [evidence-qg](evidence-qg.md) §1–3. Declara con `qg require` **todas** las verificaciones obligatorias que salgan de este descubrimiento.
 
 ## 5. Nivel de riesgo
 

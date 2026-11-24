@@ -55,7 +55,7 @@ Privacidad: la revisión envía el diff a un servicio externo (OpenAI). Si las i
 
 La config opcional puede ajustar umbrales (`review.min_risk_for_review`, `review.adversarial_at`). Revisiones largas: si el diff es grande, ejecútalas en segundo plano y continúa con otras verificaciones; no esperes en bucle.
 
-Orden: revisa **después** de que las verificaciones pasen, sobre el código final. Si corriges hallazgos de la revisión, reejecuta las verificaciones afectadas; no hace falta repetir la revisión salvo que la corrección sea amplia.
+Orden: revisa **después** de que las verificaciones pasen, sobre el código final. Si corriges hallazgos de la revisión, reejecuta las verificaciones afectadas (con `qg run` si está disponible; la edición deja la evidencia anterior `stale`). No hace falta repetir la revisión salvo que la corrección sea amplia. La revisión de Codex **no** se registra como verificación de `qg` ni sustituye a ninguna obligatoria.
 
 ## 3. Criterios que se piden al revisor
 

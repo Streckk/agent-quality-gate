@@ -61,4 +61,8 @@ expect_fail "eval introducido en bin/qg"
 copy_repo; chmod -x "$tmp/r/bin/qg"
 expect_fail "bin/qg sin bit de ejecución"
 
+# Integración con qg: no se pueden perder sus garantías documentales
+copy_repo; sed -i 's/no equivale a `PASS`/equivale a PASS/' "$tmp/r/skills/quality-gate/references/evidence-qg.md"
+expect_fail "regla 'valid no equivale a PASS' eliminada"
+
 (( failures == 0 )) && echo "OK: selftest completo" || { echo "FALLÓ: $failures caso(s)" >&2; exit 1; }

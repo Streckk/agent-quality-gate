@@ -1,0 +1,138 @@
+# Evidencia ejecutable con `qg`
+
+`qg` registra la evidencia de cada verificación: qué código se verificó (huella por contenido), qué comando se ejecutó y su exit code real. Además, `qg status` indica si esa evidencia sigue vigente. Cuando está disponible y es compatible, **todas** las verificaciones de la puerta se ejecutan con `qg`. Si no lo está, la puerta sigue el modo sin `qg` (sección 8) y lo dice en el reporte.
+
+`qg` no decide qué verificar ni aprueba nada: registra procesos. La clasificación sigue siendo tuya y se basa en la salida real.
+
+## 1. Detectar `qg` y su compatibilidad (Discover)
+
+```bash
+QG=$(command -v qg 2>/dev/null)
+# Si no está en PATH: junto a esta skill (instalación por symlink desde el repo agent-quality-gate).
+# <SKILL_DIR> es el directorio base de esta skill que indica Claude Code.
+[ -n "$QG" ] || { d=$(cd -P "<SKILL_DIR>" 2>/dev/null && cd ../.. && pwd); [ -x "$d/bin/qg" ] && QG="$d/bin/qg"; }
+"$QG" version --json        # requiere "schema":1 e "interface" >= 2
+"$QG" -C <repo> fingerprint # exit 65 = no es un repo Git → modo sin qg
+```
+
+Usa el modo `qg` solo si se cumplen las tres condiciones: el ejecutable existe, la interfaz es compatible y la huella funciona. En cualquier otro caso, usa el modo sin `qg` y anota el motivo (`qg no instalado`, `interfaz N < 2`, `no es repo Git`).
+
+Las variables de shell **no persisten** entre llamadas a Bash: usa la ruta absoluta de `qg` en cada comando.
+
+## 2. Identificador de ejecución (run-id)
+
+Genera **uno por invocación** de la puerta y úsalo literalmente en todos los comandos `qg` de esa invocación:
+
+```bash
+echo "qg-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"     # p. ej. qg-20261124T171500Z-12345
+```
+
+Pásalo siempre como `--run-id <ID>`, sin depender de `QG_RUN_ID`. Con run-id, los requisitos y la evidencia quedan aislados de otras sesiones en el mismo worktree: nadie sustituye tus requisitos ni cuenta como tuya la evidencia de otra sesión.
+
+## 3. Declarar las obligatorias (`qg require`)
+
+Después de descubrir y clasificar las verificaciones:
+
+```bash
+"$QG" -C <repo> require --run-id <ID> lint unit build
+```
+
+- Declara **todas** las obligatorias del alcance, también las que sospechas que no se podrán ejecutar (herramienta ausente, aprobación pendiente). Así su falta queda en la evidencia como `missing` o `blocked`, nunca como aprobada.
+- Las opcionales no se declaran, pero se ejecutan igual con `qg run` si aplican.
+- `check-id`: el `id` de `.agent/verification.yaml` o un nombre corto del script (`[A-Za-z0-9._-]`, máx. 64).
+- Sin obligatorias declaradas, `qg status` nunca da `valid`.
+
+## 4. Ejecutar (`qg run`) (Verify)
+
+```bash
+"$QG" -C <dir> run --run-id <ID> --timeout <seg> <check-id> -- <comando> <args…>
+```
+
+- `<comando> <args…>` es el comando **real y descubierto**, argumento por argumento: `npm run lint`, `make test`, `uv run pytest -q`. `qg` no usa shell. Para variables de entorno usa `env VAR=valor cmd`. Usa `sh -c '…'` solo si el comando del proyecto necesita pipes o expansión, y menciónalo en el reporte.
+- `-C <dir>` es el directorio donde se ejecuta, por ejemplo el subpaquete. La huella cubre siempre todo el repositorio.
+- Pon al Bash un timeout mayor que `--timeout`. `qg` mata el grupo de procesos al vencer (exit 124).
+- `qg` **no** filtra comandos: las reglas de [guardrails](guardrails.md) y de Discover siguen decidiendo qué se puede ejecutar. Lo que necesita aprobación no se ejecuta; queda declarado y sin registro (`missing`).
+- La salida del comando se muestra en tu terminal y no se guarda en el registro. Léela.
+
+Exit code de `qg run` → clasificación provisional:
+
+| exit | registro | Clasificación |
+|---|---|---|
+| 0 | `completed` | `passed` **solo si la salida muestra que se ejecutó algo** (sección 5) |
+| ≠ 0 (comando) | `completed` | `failed` |
+| 124 | `timeout` | `blocked` (timeout) |
+| 126 / 127 | `error` | `blocked` (no ejecutable / no encontrado) |
+| 128+n | `interrupted` | `blocked` (interrumpido) |
+| 64 / 65 | sin registro | error de uso de `qg` o repo no válido: corrige la llamada o cambia al modo sin `qg` |
+
+## 5. Exit 0 sin verificación real → `qg reject`
+
+Un exit 0 **no demuestra** que se haya verificado algo. Si la salida indica que no se ejecutaron pruebas, descarta esa evidencia. Ejemplos: `0 tests`, `no tests found`, `Ran 0 tests`, todos los tests `skipped`, o una suite que se autoexcluye por falta de una variable de entorno o un servicio.
+
+```bash
+"$QG" -C <repo> reject --run-id <ID> <check-id> --reason no_tests_executed
+```
+
+- `reject` solo **degrada**: el check pasa a `blocked` (`rejected:<motivo>`) hasta que una ejecución posterior lo sustituya. No sirve para ocultar fallos ni para aprobar.
+- Motivos habituales: `no_tests_executed`, `tests_skipped`, `wrong_target`.
+- En el reporte el check figura como `skipped` o `blocked` con ese motivo.
+
+## 6. Correcciones y reejecución
+
+- Cualquier edición tuya, de otro agente o del usuario cambia la huella. La evidencia anterior queda `stale` automáticamente; no hace falta borrar nada.
+- Tras cada corrección, reejecuta con `qg run` las verificaciones afectadas, y como mínimo todas las obligatorias antes del reporte.
+- El límite de iteraciones de [feedback-loops](feedback-loops.md) se mantiene: `qg` no amplía los reintentos.
+- Si una verificación modifica archivos (formateadores con `--write`, generadores), `qg` lo marca como `changed_during_run` y la evidencia sale `stale`. Reejecuta sin efectos de escritura o explícalo en el reporte.
+- **Artefactos no ignorados** (`__pycache__/`, `.pytest_cache/`, `coverage/`, `dist/` cuando no están en `.gitignore`) cambian la huella y producen el mismo efecto. Observado en la validación con Python.
+  - Opción preferida: un modo que no escriba, como `env PYTHONDONTWRITEBYTECODE=1 make test`. Es el mismo comando con una variable de entorno, y se declara en el reporte.
+  - Solo puedes borrar los artefactos que **tu propia ejecución** acaba de crear, y debes decirlo.
+  - Añadirlos a `.gitignore` es un cambio del repositorio: proponlo, no lo hagas sin aprobación.
+  - Nunca excluyas rutas de la huella para que la evidencia salga `valid`.
+
+## 7. Consultar la evidencia antes del reporte (Report)
+
+```bash
+"$QG" -C <repo> status --run-id <ID> --json
+```
+
+Usa su `result` y la lista `checks` tal cual. **No** reconstruyas el estado de memoria.
+
+| `qg status` | Significado | Veredicto ([report-format](report-format.md)) |
+|---|---|---|
+| `valid` | todas las obligatorias `passed` sobre la huella actual | **permite** `PASS` / `PASS WITH LIMITATIONS`; la revisión, los hallazgos y las aprobaciones siguen aplicando |
+| `failed` | alguna obligatoria falló (último registro) | `FAIL` |
+| `blocked` | no encontrado, no ejecutable o `reject` | `BLOCKED` |
+| `incomplete` | timeout, interrupción, en curso o registro ilegible | `BLOCKED` |
+| `stale` | el código cambió después de verificar | reejecutar; si no es posible, `BLOCKED` |
+| `missing` | obligatoria sin ejecutar, o sin obligatorias declaradas | `BLOCKED` (o `PASS WITH LIMITATIONS` si de verdad no existen verificaciones aplicables y el riesgo es `low`) |
+
+**`valid` no equivale a `PASS`.** Un `PASS` exige además:
+- que no haya hallazgos `confirmed` abiertos;
+- las limitaciones propias de cada veredicto;
+- las aprobaciones humanas que procedan (en riesgo `high`, siempre).
+
+Si `qg status` y tu lectura de las salidas discrepan, gana la opción más restrictiva y se explica la discrepancia.
+
+En el reporte, la línea de evidencia queda así:
+
+```
+**Evidencia:** qg <versión> · status=<result> · huella <fp corto> · run-id <ID> · índice <matches|differs>
+```
+
+Si el índice difiere del working tree, avisa de que un commit incluiría contenido distinto del verificado.
+
+## 8. Modo sin `qg`
+
+Sigue el protocolo de v0.1 completo:
+- huella manual según [report-format](report-format.md);
+- exit codes observados en tus propias ejecuciones de Bash.
+
+En el reporte escribe `Evidencia: sin qg (<motivo>)`. **Nunca** atribuyas a `qg` resultados que no produjo, ni inventes una salida de `qg status`.
+
+## 9. Qué no hacer
+
+- No edites `.git/quality-gate/` a mano ni fabriques registros.
+- No uses `qg reject` sobre checks de otra sesión ni para ocultar fallos.
+- No ejecutes `qg gc` salvo que el usuario lo pida.
+- No uses el run-id de otra sesión para "heredar" su evidencia.
+- No presentes `qg` como garantía frente a manipulación: es evidencia local, y la garantía final es CI.

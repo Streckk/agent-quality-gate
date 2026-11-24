@@ -24,6 +24,8 @@ Prefiere el subconjunto afectado (tests del paquete, `nx affected`, rutas concre
 
 ## 3. Captura de evidencia
 
+Si `qg` está disponible, ejecuta cada verificación con `qg run --run-id <ID> <check-id> -- <comando>` ([evidence-qg](evidence-qg.md) §4). `qg` registra el comando, el exit code, los tiempos y la huella. Tú sigues leyendo la salida para clasificar el resultado. Sin `qg`, ejecútala directamente y registra tú los datos.
+
 Para cada verificación registra:
 
 - comando exacto y directorio,
@@ -32,7 +34,7 @@ Para cada verificación registra:
 - resumen de salida (conteo de tests, primer error relevante; no vuelques logs enteros),
 - ruta a reportes generados si existen (junit, coverage).
 
-Un exit code 0 con salida que indica que no se ejecutó nada (p. ej. "no tests found", o tests que se autoexcluyen si falta una variable de entorno) es `skipped`, no `passed`.
+Un exit code 0 con salida que indica que no se ejecutó nada (p. ej. "no tests found", o tests que se autoexcluyen si falta una variable de entorno) es `skipped`, no `passed`. Con `qg`, regístralo además con `qg reject --run-id <ID> <check-id> --reason no_tests_executed` para que la evidencia no quede como válida.
 
 Conserva el exit code real: en `cmd | tail` el `$?` es el de `tail`. Usa `${PIPESTATUS[0]}`, redirige a un archivo o no uses pipes.
 
@@ -56,7 +58,7 @@ mientras haya verificaciones obligatorias en failed:
     diagnosticar la causa raíz con la salida real
     si la causa está fuera del alcance o requiere acción sensible: parar → pendiente
     aplicar la corrección mínima
-    reejecutar la verificación fallida y las que dependan de los archivos tocados
+    reejecutar la verificación fallida y las que dependan de los archivos tocados (con qg run si está disponible)
     iteración += 1
 ```
 

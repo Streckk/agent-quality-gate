@@ -9,7 +9,8 @@ El reporte es la salida verificable de la puerta. Debe poder auditarse: cada `pa
 
 **Alcance:** <working tree | rama X vs main | rutas>  ·  **Riesgo:** <low|medium|high> (<señales>)
 **Fuentes:** <CLAUDE.md, .agent/verification.yaml, package.json, CI...>
-**Huella de evidencia:** HEAD `<sha>` · diff `<sha256 corto>` · <vigente | OBSOLETA: cambió tras la última ejecución>
+**Evidencia:** qg <versión> · status=<result> · huella <fp corto> · run-id <ID> · índice <matches|differs>
+            (sin qg: `sin qg (<motivo>)` · HEAD `<sha>` · diff `<sha256 corto>` · <vigente | OBSOLETA>)
 
 ### Verificaciones
 | id | comando | estado | exit | evidencia | obligatoria |
@@ -56,6 +57,10 @@ Evalúa las condiciones **en este orden**; el primer veredicto que aplique es el
 ## Huella de evidencia (anti-obsolescencia)
 
 Un `passed` solo vale para el código exacto sobre el que se ejecutó.
+
+**Con `qg`:** `qg status --run-id <ID> --json` calcula la huella actual y la compara con la de cada registro. Usa su resultado y la correspondencia de [evidence-qg](evidence-qg.md) §7. `valid` permite aprobar; no aprueba por sí solo.
+
+**Sin `qg`** (modo v0.1):
 
 1. Tras la **última** ejecución de verificaciones, registra: `git rev-parse HEAD` y un hash del estado del alcance, por ejemplo `{ git diff HEAD; git ls-files --others --exclude-standard; } | sha256sum` (sin git: hash de los archivos del alcance).
 2. Justo antes de emitir el reporte, recalcúlalo. Si difiere (porque tú, otro agente o el usuario editó algo después), reejecuta las verificaciones afectadas o marca la huella como **OBSOLETA** y aplica la precedencia (`BLOCKED`).
