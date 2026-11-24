@@ -20,7 +20,8 @@ for f in README.md CHANGELOG.md \
          bin/qg bin/qg-run docs/evidencia.md tests/run_core_tests.sh \
          .claude-plugin/plugin.json hooks/hooks.json hooks/session-start.sh hooks/stop.sh \
          hooks/pre-tool-use.sh hooks/lib/common.sh hooks/lib/json.awk tests/run_hook_tests.sh \
-         docs/hooks.md; do
+         docs/hooks.md docs/agent-evals.md evals/README.md evals/evaluate.sh evals/run.sh \
+         evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh evals/lib/trace.py tests/run_eval_tests.sh; do
   [[ -f "$ROOT/$f" ]] && ok "existe $f" || fail "falta $f"
 done
 
@@ -30,6 +31,19 @@ for f in bin/qg bin/qg-run; do
   bash -n "$ROOT/$f" 2>/dev/null && ok "sintaxis $f" || fail "$f: error de sintaxis bash"
   [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
 done
+# Agent Evals: cada caso tiene case.conf (con id y criterios) y task.md; scripts con sintaxis válida
+for d in "$ROOT"/evals/cases/*/; do
+  [ -d "$d" ] || continue
+  c=${d%/}; c=${c##*/}
+  [[ -f "$d/case.conf" && -f "$d/task.md" ]] || { fail "evals/cases/$c: falta case.conf o task.md"; continue; }
+  grep -q "^id=$c$" "$d/case.conf" || fail "evals/cases/$c: id distinto del directorio"
+  grep -qE '^expect_(verdicts|required|qg_status|codex|report_regex|stop_blocks_max)=' "$d/case.conf" || fail "evals/cases/$c: sin criterios de éxito"
+done
+for f in evals/evaluate.sh evals/run.sh evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh; do
+  [[ -f "$ROOT/$f" ]] && { bash -n "$ROOT/$f" 2>/dev/null || fail "$f: error de sintaxis bash"; }
+done
+grep -qx 'runs/' "$ROOT/evals/.gitignore" 2>/dev/null && ok "evals: resultados crudos fuera de git" || fail "evals/.gitignore debe excluir runs/"
+
 # Hooks: sintaxis y bit de ejecución
 for f in hooks/session-start.sh hooks/stop.sh hooks/pre-tool-use.sh; do
   [[ -f "$ROOT/$f" ]] || continue
