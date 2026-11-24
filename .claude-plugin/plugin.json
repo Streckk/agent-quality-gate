@@ -1,0 +1,9 @@
+{
+  "name": "agent-quality-gate",
+  "version": "0.2.0-dev",
+  "description": "Puerta de calidad para agentes de programación: skill /quality-gate, evidencia determinista con qg y hooks opcionales (desactivados por defecto) que piden verificar los cambios sin evidencia vigente.",
+  "author": { "name": "Streckk" },
+  "homepage": "https://github.com/Streckk/agent-quality-gate",
+  "repository": "https://github.com/Streckk/agent-quality-gate",
+  "keywords": ["quality-gate", "verification", "evidence", "hooks", "codex"]
+}

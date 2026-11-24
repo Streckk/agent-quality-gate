@@ -1,0 +1,14 @@
+{
+  "description": "agent-quality-gate: hooks opcionales, desactivados por defecto (QG_HOOKS=1 o 'hooks:' en .agent/verification.yaml). No invocan modelos ni ejecutan verificaciones.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"", "timeout": 20 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\"", "timeout": 30 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.sh\"", "timeout": 20 } ] }
+    ]
+  }
+}
