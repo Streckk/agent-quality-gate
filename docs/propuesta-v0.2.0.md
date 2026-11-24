@@ -124,35 +124,63 @@ Modificar:
 
 ## Integración de hooks propuesta (siguiente iteración, sobre `qg`)
 
-Con la evidencia ya disponible, los hooks se simplifican: **no necesitan guardar estado propio**, porque preguntan a `qg`.
+> Revisada tras integrar `qg` con la skill (interfaz 2: requisitos y evidencia por sesión, `qg reject`). **No implementada.**
+
+Con la evidencia ya disponible, los hooks no necesitan guardar un estado de verificación propio: preguntan a `qg`. **Ningún hook invoca modelos**: ni Claude ni Codex. Solo ejecutan `qg` y `git`.
+
+### Identidad de sesión
+
+- El `session_id` que Claude Code entrega en la entrada de cada hook se convierte en el run-id de `qg` (`cc-<session_id>`, validado con la misma regex).
+- La skill usará ese run-id cuando exista; fuera de hooks, como ahora, genera el suyo.
+- Así, `qg require` y `qg status` de una sesión no se mezclan con otra concurrente (probado en `tests/core/test_sessions.sh`).
+
+### Hooks
 
 | Hook | Acción | Coste |
 |---|---|---|
-| `SessionStart` (opcional) | `qg fingerprint` → guarda la huella inicial de la sesión en `quality-gate/v1/sessions/<session_id>` | 1 huella |
-| `PostToolUse` | **no necesario para la validez**. Opcional: avisar una sola vez de que la evidencia quedó obsoleta tras la primera edición | 0–1 huella por herramienta |
-| `Stop` | si la huella actual ≠ la de inicio de sesión (hubo cambios) y `qg status` ≠ `valid` → `{"decision":"block","reason":"…qg status: <resultado>…"}`. No bloquea si `stop_hook_active=true`, ni más de una vez por huella (se registra en `sessions/<id>`). Escape: `QG_DISABLE=1` | 1 huella + lectura de registros (≈ coste de `git status`) |
-| `PreToolUse` (Bash) | para `git commit`, rechaza trailers de IA en el mensaje. Para `git push`/`gh pr create` con `qg status` ≠ `valid` → `ask`, no `deny` | solo en esos comandos |
+| `SessionStart` | `qg fingerprint` → guarda la huella inicial en `sessions/cc-<id>/start`. No inyecta contexto (no compite con Superpowers, cuyo único hook es también `SessionStart`) | 1 huella (≈ 50–150 ms) |
+| `PostToolUse` | **no se usa**: `qg status` recalcula la huella bajo demanda | 0 |
+| `Stop` | ver reglas abajo | 1 huella + lectura de registros (≈ 75–190 ms medidos) |
+| `PreToolUse` (Bash) | `git commit` con trailers de IA en el mensaje → `deny` con motivo. `git push`/`gh pr create` con `qg status` ≠ `valid` → `ask` (decide la persona). Antes de recurrir al hook, preferir `permissions.deny` nativo | solo en esos comandos |
 
-Requisitos para empezar:
+### Reglas de `Stop` (sin bucles, sin bloquear lo legítimo)
 
-1. Las obligatorias del proyecto declaradas con `qg require` (o derivadas por la skill de `.agent/verification.yaml`).
-2. La skill usa `qg-run <id> -- <cmd>` en la fase Verify cuando `qg` esté disponible, y hace como hasta ahora si no lo está.
-3. Empaquetado como plugin con hooks **desactivados por defecto**.
+1. **¿Hubo cambios relevantes?** Huella actual ≠ huella de `SessionStart`. Si no, nunca bloquea, aunque no haya evidencia (sesión de solo lectura o conversación).
+2. **¿Falta evidencia del código actual?** Solo se bloquea si `qg status --run-id cc-<id>` da `stale` o `missing`: hay código cambiado y sin verificar.
+   - `failed`, `blocked` e `incomplete` **no bloquean**: son resultados legítimos que el reporte debe explicar (herramienta ausente, aprobación pendiente, decisión humana). Obligar a seguir no los resolvería y generaría bucles y coste.
+3. **Anti-bucle:**
+   - no bloquea si `stop_hook_active=true`;
+   - como máximo 1 bloqueo por huella y sesión (marca en `sessions/cc-<id>/stop-<fp>`);
+   - si la huella no cambia tras el bloqueo, el siguiente `Stop` deja terminar.
+4. **Mensaje:** `{"decision":"block","reason":"Hay cambios sin evidencia vigente (qg status: stale). Ejecuta /quality-gate o explica por qué no aplica."}`. Es breve y no repite instrucciones de otras skills.
+5. **Escape voluntario:** `QG_DISABLE=1`, o `hooks: { stop: off }` en `.agent/verification.yaml`.
+
+### Coexistencia
+
+- **Codex:** su plugin tiene su propio `Stop` (review gate, desactivado por defecto). El nuestro **nunca** lanza Codex ni exige revisión: solo evidencia determinista. Si el review gate de Codex está activo, ambos actúan por separado y el nuestro sigue limitado a 1 bloqueo por huella. Para no duplicar coste, nuestro mensaje no pide revisión.
+- **Superpowers:** solo registra `SessionStart` (7.0.2). No inyectamos contexto ni duplicamos `verification-before-completion`: el hook exige *evidencia*, no instrucciones.
+- **Permisos y aprobaciones:** los hooks no ejecutan verificaciones ni aprueban nada. `PreToolUse` usa `ask` para push/PR (la persona decide) y `deny` solo para los trailers de IA, que son una política del propietario.
+
+### Activación voluntaria
+
+- Distribuido como plugin, con hooks **desactivados por defecto**.
+- Activación por proyecto con `.agent/verification.yaml` → `hooks: { stop: on, pretool: on }`, o por sesión con `QG_HOOKS=1`.
+- Nunca se modifica el `settings.json` del usuario.
+- `qg hooks status` (futuro) mostraría qué está activo y por qué.
 
 ### Archivos de la siguiente iteración
 
 Crear:
 - `.claude-plugin/plugin.json`
 - `hooks/hooks.json`
+- `hooks/session-start.sh`
 - `hooks/stop.sh`
 - `hooks/pre-tool-use.sh`
-- `hooks/session-start.sh`
-- `tests/hooks/*.sh`, con JSON de entrada simulados por evento, incluido el ciclo de `Stop`.
+- `tests/hooks/*.sh`, con JSON de entrada simulados por evento: ciclo de `Stop`, `stop_hook_active`, `failed` que no bloquea, `QG_DISABLE`.
 
 Modificar:
-- `skills/quality-gate/references/feedback-loops.md`: usar `qg-run`.
-- `references/report-format.md`: la huella se toma de `qg status --json`.
-- `references/project-discovery.md`: `qg require` a partir de los checks obligatorios.
-- `bin/qg`: subcomando `session` (inicio y marcas de bloqueo).
+- `bin/qg`: subcomando `session start|mark` para la huella inicial y las marcas de bloqueo.
+- `references/evidence-qg.md`: usar el run-id de la sesión de Claude Code si existe.
+- `references/project-discovery.md`: clave `hooks:` en el esquema.
 - `.github/workflows/validate.yml`
 - `README.md` y `CHANGELOG.md`

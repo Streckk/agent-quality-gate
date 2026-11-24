@@ -76,9 +76,12 @@ qg require lint unit
 qg-run lint -- npm run lint
 qg-run unit -- pytest -q
 qg status        # valid | failed | blocked | incomplete | stale | missing
+qg require --run-id mi-sesion lint unit       # requisitos y evidencia aislados por sesión
 ```
 
-Todavía no está integrado en la skill ni en hooks. Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md).
+**Integrado en la skill:** si `qg` está disponible (en el `PATH` o junto a la skill instalada por symlink) y su interfaz es compatible, `/quality-gate` sigue el flujo `qg require → qg run → qg status` con un run-id por invocación, y el reporte se basa en esa evidencia. `valid` permite aprobar, pero no aprueba por sí solo. Sin `qg`, la skill se comporta como en v0.1 y lo indica. Ver [evidence-qg.md](skills/quality-gate/references/evidence-qg.md).
+
+**No hay hooks:** nada obliga todavía a usar `qg`. Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md). Validación en [docs/validacion-v0.2.0-dev.md](docs/validacion-v0.2.0-dev.md).
 
 ## Integraciones opcionales
 

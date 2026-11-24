@@ -5,11 +5,13 @@
 No es un orquestador. Cada invocación de `qg run` ejecuta **un** comando. Decidir qué verificar sigue siendo trabajo de la skill (`/quality-gate`) o de la persona.
 
 ```text
-bin/qg            fingerprint | run | require | status | show | gc
+bin/qg            fingerprint | run | require | status | reject | show | gc | version
 bin/qg-run        alias de `qg run`
 ```
 
 Requisitos: `bash >= 3.2` y `git >= 2.25`. No usa jq, Node ni Python.
+
+Integración con la skill: [evidence-qg.md](../skills/quality-gate/references/evidence-qg.md). Validación: [validacion-v0.2.0-dev.md](validacion-v0.2.0-dev.md).
 
 ## Uso rápido
 
@@ -56,7 +58,8 @@ El **índice** se informa aparte (`qg fingerprint --json` → `index: matches|di
 |---|---|
 | archivos **ignorados** (`.gitignore`, `info/exclude`) | no forman parte de la huella. Si las pruebas dependen de `.env`, `node_modules`, etc., sus cambios no invalidan la evidencia |
 | submódulos | cuenta el commit del submódulo, no sus cambios sin commitear |
-| filtros *clean* (p. ej. git-lfs) y `core.autocrlf` | se aplican como en `git add`: el filtro se ejecuta y la huella refleja el contenido normalizado |
+| filtros *clean*/*process* (p. ej. git-lfs o filtros propios) | **se neutralizan** (`-c filter.<driver>.clean=` / `process=` / `required=false` en `add` **y** en `write-tree`, que también los ejecutaba al comprobar entradas "racy"): calcular la huella no ejecuta procesos externos. Consecuencia: un archivo filtrado que cambia se identifica por su contenido **sin filtrar**; uno modificado y luego restaurado puede dar una huella distinta de `HEAD^{tree}` (evidencia `stale` de más, nunca `valid` de más) |
+| `core.autocrlf`, `eol`, `ident`, `working-tree-encoding` | se aplican (conversiones internas de Git, sin procesos externos) |
 | sparse-checkout | no probado |
 | directorios vacíos | Git no los representa |
 | cambios **mientras se calcula** la huella | el cálculo no es una instantánea atómica del sistema de archivos. `qg run` calcula la huella antes y después; si difieren, la evidencia queda `stale` (`changed_during_run`). Un cambio que se revierte durante la ejecución no se detecta |
@@ -137,10 +140,14 @@ Lock:
 
 La pausa de 15 s corrige una carrera real detectada en las pruebas de concurrencia: un proceso leía el dueño de un lock ya liberado y retiraba el lock nuevo de otro proceso.
 
-Sesiones:
+Sesiones (interfaz 2):
 
 - Cada registro lleva `run_id`, tomado de `--run-id` o de `QG_RUN_ID`, y `unspecified` si no se indica.
-- `qg status --run-id X` considera solo esa sesión.
+- **Requisitos por sesión:** `qg require --run-id X …` escribe en `sessions/X/required`. Sin run-id se usa el archivo del worktree (`required`).
+- `qg status --run-id X` usa **solo** los requisitos y los registros de la sesión X. Nunca hereda los del worktree ni los de otra sesión: una sesión sin requisitos propios da `missing (no_required_checks)`.
+- Motivo del cambio: con un único `required` por worktree, una sesión podía sobrescribir los requisitos de otra concurrente y hacer que esta obtuviera un `valid` falso con un conjunto menor. Lo demuestran las pruebas de `tests/core/test_sessions.sh`.
+- El código es compartido: si una sesión modifica el worktree, la evidencia de **todas** queda `stale`.
+- `qg gc` elimina las sesiones sin actividad desde hace más de `QG_SESSION_DAYS` días (30 por defecto).
 
 Seguridad de rutas:
 
@@ -153,7 +160,7 @@ Seguridad de rutas:
 ## 4. Validación de evidencia (`qg status`)
 
 ```text
-qg status [--require ID]… [--run-id ID] [--json]
+qg status [--require ID]… [--run-id ID] [--json]      # --run-id por defecto: $QG_RUN_ID
 ```
 
 Las verificaciones obligatorias se toman de `--require` o, en su defecto, de `qg require`. **Sin obligatorias declaradas el resultado es `missing`**: la mera existencia de registros en verde no aprueba nada.
@@ -166,6 +173,7 @@ Para cada obligatoria se busca el registro más reciente (por secuencia) **sobre
 | `completed`, exit ≠ 0 | `failed` |
 | `completed`, la huella cambió durante la ejecución | `stale` (`changed_during_run`) |
 | `error` (no encontrado / no ejecutable) | `blocked` |
+| `rejected` (`qg reject`: p. ej. exit 0 sin pruebas ejecutadas) | `blocked` (`rejected:<motivo>`) |
 | `timeout`, `interrupted`, `running` (vivo o abandonado), sin huella final | `incomplete` |
 | ninguno sobre la huella actual, pero sí sobre otras | `stale` (`code_changed`) |
 | ningún registro | `missing` |
@@ -189,6 +197,16 @@ Códigos de salida: `0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale
 
 `valid` **no** equivale a `PASS`. Solo afirma que existe evidencia de verificaciones deterministas vigente para el código actual.
 
+## 4b. Descartar evidencia (`qg reject`) y compatibilidad (`qg version`)
+
+```text
+qg reject [--run-id ID] <check-id> --reason <código>     # [a-z0-9_-], p. ej. no_tests_executed
+qg version [--json]                                     # {"name":"qg","version":…,"schema":1,"interface":2}
+```
+
+- `reject` añade un registro `rejected` sobre la huella actual. **Solo degrada**: el check pasa a `blocked` hasta que una ejecución posterior lo sustituya. Sirve para que la evidencia refleje lo que muestra la salida: un `exit 0` que no ejecutó pruebas no debe quedar como `passed`. No afecta a otras huellas ni puede aprobar nada.
+- `interface` sube cuando cambia la interfaz de la CLI. La skill exige `interface >= 2` y `schema == 1`; si no se cumple, usa el modo sin `qg`.
+
 ## 5. Mantenimiento (`qg gc`)
 
 - Elimina temporales de más de 10 minutos.
@@ -196,10 +214,22 @@ Códigos de salida: `0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale
 - Conserva los `QG_KEEP_RECORDS` más recientes por check (50 por defecto).
 - No toca registros con esquema futuro ni registros `running`.
 
-## 6. Compatibilidad
+## 6. Rendimiento medido
+
+Repos sintéticos (archivos de texto de ~20 bytes; Linux, SSD; la mediana de varias ejecuciones es similar):
+
+| Archivos | `.git` | `qg fingerprint` limpio | con 20 cambios | `qg status` | `git status` |
+|---|---|---|---|---|---|
+| 1.000 | 1 MB | 54 ms | 59 ms | 75 ms | 10 ms |
+| 10.000 | 2 MB | 94 ms | 109 ms | 120 ms | 36 ms |
+| 50.000 | 10 MB | 151 ms | 155 ms | 186 ms | 72 ms |
+
+El coste es de 2 a 5 veces el de `git status`. Lo dominan la copia del índice y el recorrido del working tree que hace `git add -A` (reutiliza la caché de stat). Para un futuro hook `Stop`, que haría una huella o un `status` por turno, supone unos 0,1–0,2 s en repos medianos. No se optimiza. Archivos grandes **modificados** o no versionados sí cuestan: se leen enteros para calcular su hash.
+
+## 7. Compatibilidad
 
 | Plataforma | Estado |
 |---|---|
-| Linux (bash 5.3, git 2.55) | **probado**: 154 aserciones en `tests/core/` |
-| macOS (bash 3.2 del sistema) | código escrito para bash 3.2 (sin arrays asociativos, `mapfile` ni `wait -n`); **pendiente** de verificar en CI (`macos-latest`) |
+| Linux (bash 5.3, git 2.55) | **probado**: ver el recuento actual en `bash tests/run_core_tests.sh` |
+| macOS (bash 3.2.57 del sistema) | CI de `40801e3`: 153 de 154 aserciones; el fallo, una ruta de prueba con `//`, lo corrige `8299ecf`. Las suites y funciones nuevas de la interfaz 2 están **pendientes** de CI |
 | Windows | **no soportado** en esta versión. Git Bash/WSL podrían funcionar, pero no se ha probado. Una versión PowerShell duplicaría toda la lógica; se pospone hasta que haya un caso de uso |

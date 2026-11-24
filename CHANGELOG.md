@@ -4,6 +4,28 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (integración skill + `qg`)
+- Referencia `evidence-qg.md`:
+  - detección de `qg` (`PATH` o junto a la skill) y compatibilidad (`qg version --json`, interfaz ≥ 2);
+  - run-id por invocación, `qg require`, `qg run`, `qg reject` y `qg status`;
+  - correspondencia con los veredictos y el modo sin `qg`.
+- `SKILL.md` y las referencias de cada fase usan `qg` cuando está disponible.
+- `qg` (interfaz 2):
+  - requisitos por sesión (`require/status --run-id`, sin herencia entre sesiones);
+  - `qg reject` (solo degrada);
+  - `qg version --json`;
+  - `gc` de sesiones inactivas.
+- Pruebas: `tests/core/test_sessions.sh`; filtros clean; modificaciones externas y simultáneas. Total: 188 aserciones.
+- Fixture Python con una suite obligatoria que sale con exit 0 sin ejecutar pruebas. El analizador de trazas contrasta los reportes con los run-ids.
+- `docs/validacion-v0.2.0-dev.md`: escenarios reales A–F, defectos y limitaciones.
+- CI: ShellCheck como paso informativo (no bloquea).
+
+### Corregido
+- `qg fingerprint` ejecutaba los filtros clean configurados (p. ej. git-lfs), también desde `git write-tree` con entradas "racy". Ahora se neutralizan.
+- Una sesión concurrente podía sustituir los requisitos de otra en el mismo worktree y producir un `valid` falso.
+- La skill no encontraba `qg` fuera del `PATH`: el comando de detección pasa a `SKILL.md`.
+- Pruebas: ruta temporal con `//` en macOS.
+
 ### Añadido (v0.2.0-dev: infraestructura de evidencia, sin hooks)
 - `bin/qg` y `bin/qg-run` (bash ≥ 3.2 + git):
   - `fingerprint`: huella por contenido del working tree, sin escribir en el índice ni en `.git/objects`;
