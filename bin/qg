@@ -1,0 +1,729 @@
+#!/usr/bin/env bash
+# qg — evidencia de verificación para agent-quality-gate.
+#
+# Subcomandos:
+#   qg fingerprint [--json]                         huella del contenido actual del repositorio
+#   qg run [opciones] <check-id> -- <cmd> [args…]  ejecuta UN comando y registra evidencia
+#   qg require [--clear] [<check-id>…]              declara las verificaciones obligatorias
+#   qg status [--require ID]… [--run-id ID] [--json]  ¿hay evidencia vigente para el estado actual?
+#   qg show [<check-id>]                            lista los registros
+#   qg gc                                           limpia temporales, cuarentena registros corruptos
+# Opción global: -C <dir> (como git -C).
+#
+# Requisitos: bash >= 3.2 y git >= 2.25. Sin jq, Node ni Python.
+# Documentación: docs/evidencia.md
+
+QG_VERSION="0.2.0-dev"
+QG_SCHEMA=1
+EX_USAGE=64
+EX_STATE=65
+QG_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+QG_RUNID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+QG_FP_RE='^(sha1|sha256):[0-9a-f]{40}([0-9a-f]{24})?$'
+QG_KEEP_RECORDS="${QG_KEEP_RECORDS:-50}"
+
+umask 077
+
+# ---------------------------------------------------------------- utilidades
+
+qg_err()   { printf 'qg: %s\n' "$*" >&2; }
+qg_die()   { local code=$1; shift; qg_err "$@"; exit "$code"; }
+qg_usage() { qg_die "$EX_USAGE" "$@ (ver: qg help)"; }
+
+qg_now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
+qg_now_epoch() { date +%s; }
+qg_host()      { hostname 2>/dev/null || uname -n 2>/dev/null || echo unknown; }
+
+# Escapa un valor para una línea key=value (sin saltos de línea).
+qg_esc() {
+  local v=$1
+  v=${v//\\/\\\\}
+  v=${v//$'\n'/\\n}
+  v=${v//$'\r'/\\r}
+  printf '%s' "$v"
+}
+
+# Cadena JSON. Los valores ya vienen escapados por qg_esc o validados por regex.
+qg_json_str() {
+  local v=$1
+  v=${v//\\/\\\\}
+  v=${v//\"/\\\"}
+  v=${v//$'\t'/\\t}
+  v=$(printf '%s' "$v" | tr -d '\000-\010\012-\037')
+  printf '"%s"' "$v"
+}
+
+qg_is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
+
+# Redacta argumentos que parecen secretos: --token=x, PASSWORD=x, --api-key x, https://u:p@host
+qg_redact_argv() {
+  local out="" a skip_next=0 r
+  local secret='(token|secret|passw(or)?d|pwd|api[_-]?key|auth|credential|private[_-]?key|bearer)'
+  shopt -s nocasematch
+  for a in "$@"; do
+    if [ "$skip_next" = 1 ]; then
+      r=REDACTED; skip_next=0
+    elif [[ $a =~ ^(-{0,2}[A-Za-z0-9_.-]*${secret}[A-Za-z0-9_.-]*)=.+$ ]]; then
+      r="${BASH_REMATCH[1]}=REDACTED"
+    elif [[ $a =~ ^-{1,2}[A-Za-z0-9_.-]*${secret}[A-Za-z0-9_.-]*$ ]]; then
+      r=$a; skip_next=1
+    elif [[ $a =~ ^([A-Za-z][A-Za-z0-9+.-]*://[^/:@]+):[^/@]+@(.*)$ ]]; then
+      r="${BASH_REMATCH[1]}:REDACTED@${BASH_REMATCH[2]}"
+    else
+      r=$a
+    fi
+    out="$out${out:+ }$(printf '%q' "$r")"
+  done
+  shopt -u nocasematch
+  printf '%s' "$out"
+}
+
+# Resuelve -C y deja el directorio de trabajo.
+QG_ARGS=()
+qg_parse_global() {
+  QG_ARGS=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -C) [ $# -ge 2 ] || qg_usage "-C requiere un directorio"
+          cd -- "$2" 2>/dev/null || qg_die "$EX_STATE" "no se puede entrar en '$2'"
+          shift 2 ;;
+      *) QG_ARGS=("$@"); return ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------- Git y estado
+
+qg_git_init() {
+  command -v git >/dev/null 2>&1 || qg_die "$EX_STATE" "git no está instalado: no se puede calcular una huella"
+  if [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" != true ]; then
+    qg_die "$EX_STATE" "no es un repositorio Git con working tree: qg no puede garantizar una huella confiable (limitación de esta versión)"
+  fi
+  QG_TOP=$(git rev-parse --show-toplevel) || qg_die "$EX_STATE" "no se pudo resolver la raíz del repositorio"
+  local p
+  p=$(git rev-parse --git-path quality-gate) || qg_die "$EX_STATE" "no se pudo resolver el directorio de estado"
+  case $p in /*) ;; *) p="$PWD/$p" ;; esac
+  QG_STATE_ROOT=$p
+  QG_STATE="$p/v$QG_SCHEMA"
+}
+
+qg_state_init() {
+  local d
+  for d in "$QG_STATE_ROOT" "$QG_STATE" "$QG_STATE/records"; do
+    if [ -L "$d" ]; then qg_die "$EX_STATE" "el directorio de estado '$d' es un enlace simbólico; se rechaza por seguridad"; fi
+    if [ ! -d "$d" ]; then mkdir "$d" 2>/dev/null || [ -d "$d" ] || qg_die "$EX_STATE" "no se pudo crear '$d'"; fi
+  done
+}
+
+qg_check_dir() {
+  local d="$QG_STATE/records/$1"
+  if [ -L "$d" ]; then qg_die "$EX_STATE" "'$d' es un enlace simbólico; se rechaza"; fi
+  printf '%s' "$d"
+}
+
+# Huella: árbol Git del contenido del working tree (versionados + no versionados no ignorados),
+# calculado con un índice y un almacén de objetos temporales: no modifica el índice ni .git/objects.
+# Define QG_FP, QG_FP_INDEX (lo que entraría en un commit) y QG_HEAD.
+qg_fp_compute() {
+  local tmp objdir idx fmt wt it empty
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/qg-fp.XXXXXX") || return 1
+  mkdir "$tmp/obj" || { rm -rf "$tmp"; return 1; }
+  objdir=$(git rev-parse --git-path objects) && objdir=$(cd "$objdir" && pwd -P) || { rm -rf "$tmp"; return 1; }
+  idx=$(git rev-parse --git-path index) || { rm -rf "$tmp"; return 1; }
+  fmt=$(git rev-parse --show-object-format 2>/dev/null) || fmt=sha1
+  empty=$(git hash-object -t tree /dev/null) || { rm -rf "$tmp"; return 1; }
+  if [ -f "$idx" ]; then
+    # -p conserva el mtime: la detección de entradas "racy" de Git sigue funcionando.
+    cp -p "$idx" "$tmp/index" && cp -p "$idx" "$tmp/index.staged" || { rm -rf "$tmp"; return 1; }
+    it=$(GIT_INDEX_FILE="$tmp/index.staged" GIT_OBJECT_DIRECTORY="$tmp/obj" \
+         GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" git write-tree 2>/dev/null) || it=conflicted
+  else
+    it=$empty
+  fi
+  wt=$(cd "$QG_TOP" &&
+       GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" \
+         git -c core.fsmonitor=false -c advice.addEmbeddedRepo=false add -A -- . >/dev/null 2>"$tmp/err" &&
+       GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" \
+         git write-tree 2>>"$tmp/err")
+  local rc=$?
+  if [ $rc -ne 0 ] || [ -z "$wt" ]; then
+    qg_err "no se pudo calcular la huella: $(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')"
+    rm -rf "$tmp"; return 1
+  fi
+  rm -rf "$tmp"
+  QG_FP="$fmt:$wt"
+  if [ "$it" = conflicted ]; then QG_FP_INDEX=conflicted; else QG_FP_INDEX="$fmt:$it"; fi
+  QG_HEAD=$(git rev-parse -q --verify HEAD 2>/dev/null) || QG_HEAD=unborn
+  return 0
+}
+
+qg_index_state() {
+  if [ "$QG_FP_INDEX" = conflicted ]; then echo conflicted
+  elif [ "$QG_FP_INDEX" = "$QG_FP" ]; then echo matches
+  else echo differs; fi
+}
+
+# ---------------------------------------------------------------- escritura atómica y lock
+
+qg_atomic_write() {
+  local dest=$1 content=$2 tmp
+  tmp="$dest.tmp.$$.$RANDOM"
+  printf '%s' "$content" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+}
+
+QG_LOCKED=0
+QG_LOCK_EPOCH=""
+
+# Lee pid/host/epoch del dueño de un lock. Define L_pid, L_host, L_epoch (vacíos si no hay dueño legible).
+qg_lock_owner() {
+  local line
+  L_pid=""; L_host=""; L_epoch=""
+  [ -f "$1/owner" ] || return 1
+  # El lock puede liberarse entre la comprobación y la lectura: se trata como "sin dueño".
+  { while IFS= read -r line; do
+      case $line in pid=*) L_pid=${line#pid=} ;; host=*) L_host=${line#host=} ;; epoch=*) L_epoch=${line#epoch=} ;; esac
+    done; } 2>/dev/null < "$1/owner" || return 1
+  qg_is_uint "$L_pid" && qg_is_uint "$L_epoch"
+}
+
+# Intenta retirar un lock abandonado. Solo se considera abandonado si:
+#  - su dueño es de esta máquina, el pid ya no existe Y tiene al menos QG_LOCK_STALE_SEC segundos, o
+#  - es de otra máquina o no tiene dueño legible y supera QG_LOCK_STALE_MIN minutos.
+# Tras retirarlo (mv atómico) se comprueba que era exactamente el lock evaluado; si no, se restaura.
+qg_lock_try_break() {
+  local l=$1 stale=0 age g ep pd
+  local stale_s="${QG_LOCK_STALE_SEC:-15}" stale_min="${QG_LOCK_STALE_MIN:-10}"
+  if qg_lock_owner "$l"; then
+    ep=$L_epoch; pd=$L_pid
+    age=$(( $(qg_now_epoch) - L_epoch ))
+    if [ "$L_host" = "$(qg_host)" ]; then
+      [ "$age" -ge "$stale_s" ] && ! kill -0 "$L_pid" 2>/dev/null && stale=1
+    else
+      [ "$age" -ge $((stale_min * 60)) ] && stale=1
+    fi
+  else
+    ep=""; pd=""
+    [ -n "$(find "$l" -maxdepth 0 -mmin +"$stale_min" 2>/dev/null)" ] && stale=1
+  fi
+  [ $stale = 1 ] || return 1
+  g="$l.stale.$$.$RANDOM"
+  mv "$l" "$g" 2>/dev/null || return 1
+  qg_lock_owner "$g"
+  if [ "$L_epoch" = "$ep" ] && [ "$L_pid" = "$pd" ]; then
+    rm -rf "$g"
+    qg_err "lock abandonado recuperado (pid=${pd:-?})"
+    return 0
+  fi
+  # Retiramos un lock distinto (recién creado por otro proceso): devolverlo si el nombre está libre.
+  if [ ! -e "$l" ] && mv "$g" "$l" 2>/dev/null; then return 1; fi
+  qg_err "aviso: conflicto al recuperar el lock; se conserva en $g"
+  return 1
+}
+
+qg_lock() {
+  local l="$QG_STATE/lock" tries=0 max="${QG_LOCK_TRIES:-900}"
+  while :; do
+    if mkdir "$l" 2>/dev/null; then
+      QG_LOCK_EPOCH=$(qg_now_epoch)
+      if printf 'pid=%s\nhost=%s\nepoch=%s\n' "$$" "$(qg_host)" "$QG_LOCK_EPOCH" > "$l/owner.tmp.$$" 2>/dev/null &&
+         mv -f "$l/owner.tmp.$$" "$l/owner" 2>/dev/null; then
+        QG_LOCKED=1
+        trap 'qg_unlock' EXIT
+        return 0
+      fi
+      # El directorio desapareció entre mkdir y la escritura del dueño: reintentar.
+    else
+      qg_lock_try_break "$l" && continue
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -ge "$max" ] && qg_die "$EX_STATE" "no se pudo obtener el lock de estado ($l)"
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+}
+
+# Solo libera el lock si sigue siendo nuestro.
+qg_unlock() {
+  [ "$QG_LOCKED" = 1 ] || return 0
+  local l="$QG_STATE/lock" g
+  QG_LOCKED=0
+  if qg_lock_owner "$l" && [ "$L_pid" = "$$" ] && [ "$L_epoch" = "$QG_LOCK_EPOCH" ]; then
+    g="$l.release.$$.$RANDOM"
+    mv "$l" "$g" 2>/dev/null && rm -rf "$g"
+  else
+    qg_err "aviso: el lock ya no era de este proceso; no se elimina"
+  fi
+}
+
+# ---------------------------------------------------------------- registros
+
+# Variables R_*: contenido de un registro.
+qg_record_reset() {
+  R_schema=""; R_check_id=""; R_run_id=""; R_status=""; R_exit_code=""; R_signal=""; R_error=""
+  R_fp_start=""; R_fp_end=""; R_index_start=""; R_head_start=""; R_started_epoch=""; R_started_at=""
+  R_finished_at=""; R_finished_epoch=""; R_duration_s=""; R_pid=""; R_host=""; R_cwd=""; R_argv=""
+  R_argc=""; R_changed_during_run=""; R_timeout_s=""; R_qg_version=""
+}
+
+qg_record_body() {
+  local k v out=""
+  for k in schema qg_version check_id run_id status exit_code signal error fp_start fp_end index_start \
+           head_start changed_during_run started_at started_epoch finished_at finished_epoch duration_s \
+           timeout_s pid host cwd argc argv; do
+    v="R_$k"; v=${!v}   # expansión indirecta sobre nombres fijos de esta lista
+    out="$out$k=$(qg_esc "$v")"$'\n'
+  done
+  printf '%s' "$out"
+}
+
+# Lee y valida un registro. 0 = válido, 1 = corrupto, 2 = esquema no soportado.
+qg_record_read() {
+  local file=$1 line key val
+  qg_record_reset
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in *=*) ;; *) return 1 ;; esac
+    key=${line%%=*}; val=${line#*=}
+    case $key in
+      schema|qg_version|check_id|run_id|status|exit_code|signal|error|fp_start|fp_end|index_start|\
+      head_start|changed_during_run|started_at|started_epoch|finished_at|finished_epoch|duration_s|\
+      timeout_s|pid|host|cwd|argc|argv)
+        printf -v "R_$key" '%s' "$val" ;;   # $key ya validada contra la lista fija
+      *) [[ $key =~ ^[a-z][a-z0-9_]*$ ]] || return 1 ;;   # clave futura: se ignora
+    esac
+  done < "$file"
+  if [ "$R_schema" != "$QG_SCHEMA" ]; then
+    qg_is_uint "$R_schema" && return 2
+    return 1
+  fi
+  [[ $R_check_id =~ $QG_ID_RE ]] || return 1
+  [[ $R_run_id =~ $QG_RUNID_RE ]] || return 1
+  qg_is_uint "$R_started_epoch" || return 1
+  [[ $R_fp_start =~ $QG_FP_RE ]] || return 1
+  case $R_status in
+    running) ;;
+    completed|timeout|interrupted|error)
+      qg_is_uint "$R_exit_code" || return 1
+      [[ $R_fp_end =~ $QG_FP_RE ]] || [ "$R_fp_end" = unknown ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# Nombre: <secuencia por check, 9 díg.>-<epoch>-<pid>-<aleatorio>.rec → el orden léxico es el orden real.
+qg_record_name_ok() { [[ $1 =~ ^[0-9]{9}-[0-9]{10}-[0-9]+-[0-9]+\.rec$ ]]; }
+
+# Lista nombres de registros de un check, del más reciente al más antiguo.
+qg_record_list() {
+  local d=$1 f
+  [ -d "$d" ] || return 0
+  for f in "$d"/*.rec; do
+    [ -e "$f" ] || continue
+    f=${f##*/}
+    printf '%s\n' "$f"
+  done | LC_ALL=C sort -r
+}
+
+# ---------------------------------------------------------------- qg fingerprint
+
+qg_cmd_fingerprint() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case $1 in --json) json=1 ;; *) qg_usage "argumento desconocido: $1" ;; esac
+    shift
+  done
+  qg_git_init
+  qg_fp_compute || exit "$EX_STATE"
+  if [ $json = 1 ]; then
+    printf '{"schema":%s,"fingerprint":%s,"index_fingerprint":%s,"index":%s,"head":%s,"scope":"tracked+untracked-not-ignored"}\n' \
+      "$QG_SCHEMA" "$(qg_json_str "$QG_FP")" "$(qg_json_str "$QG_FP_INDEX")" \
+      "$(qg_json_str "$(qg_index_state)")" "$(qg_json_str "$QG_HEAD")"
+  else
+    printf '%s\n' "$QG_FP"
+  fi
+}
+
+# ---------------------------------------------------------------- qg run
+
+QG_CHILD=""; QG_SIG=""; QG_TRAPPED=0
+qg_on_signal() {
+  QG_TRAPPED=1
+  if [ -z "$QG_SIG" ]; then
+    QG_SIG=$1
+    [ -n "$QG_CHILD" ] && kill -s "$1" -- "-$QG_CHILD" 2>/dev/null
+  else
+    [ -n "$QG_CHILD" ] && kill -KILL -- "-$QG_CHILD" 2>/dev/null   # segunda señal: forzar
+  fi
+}
+
+qg_sig_num() { case $1 in HUP) echo 1 ;; INT) echo 2 ;; TERM) echo 15 ;; *) echo 0 ;; esac; }
+
+# Ejecuta "$@" sin shell intermedio, en su propio grupo de procesos, con timeout.
+# Define QG_RC, QG_TIMED_OUT, QG_SIG.
+qg_exec() {
+  local tmo=$1 grace=$2; shift 2
+  local marker wd=""
+  marker=$(mktemp "${TMPDIR:-/tmp}/qg-tmo.XXXXXX") && rm -f "$marker"
+  QG_SIG=""; QG_TIMED_OUT=0
+  trap 'qg_on_signal INT' INT
+  trap 'qg_on_signal TERM' TERM
+  trap 'qg_on_signal HUP' HUP
+  set -m                                   # cada proceso en segundo plano: su propio grupo
+  ( exec "$@" ) </dev/null &
+  QG_CHILD=$!
+  if [ "$tmo" -gt 0 ]; then
+    ( trap - INT TERM HUP
+      sleep "$tmo"
+      : > "$marker"
+      kill -TERM -- "-$QG_CHILD" 2>/dev/null
+      sleep "$grace"
+      kill -KILL -- "-$QG_CHILD" 2>/dev/null ) >/dev/null 2>&1 &
+    wd=$!
+  fi
+  set +m
+  while :; do
+    QG_TRAPPED=0
+    wait "$QG_CHILD"; QG_RC=$?
+    [ "$QG_TRAPPED" = 1 ] || break         # wait interrumpido por una señal: seguir esperando
+  done
+  if [ -n "$wd" ]; then kill -- "-$wd" 2>/dev/null; wait "$wd" 2>/dev/null; fi
+  if [ -e "$marker" ]; then QG_TIMED_OUT=1; rm -f "$marker"; fi
+  if [ -n "$QG_SIG" ] || [ "$QG_TIMED_OUT" = 1 ]; then
+    kill -KILL -- "-$QG_CHILD" 2>/dev/null   # restos del grupo (nietos) tras timeout/interrupción
+  fi
+  trap - INT TERM HUP
+  QG_CHILD=""
+}
+
+qg_cmd_run() {
+  local timeout="${QG_TIMEOUT:-3600}" grace="${QG_GRACE:-10}" run_id="${QG_RUN_ID:-unspecified}"
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --timeout) [ $# -ge 2 ] || qg_usage "--timeout requiere segundos"; timeout=$2; shift 2 ;;
+      --grace)   [ $# -ge 2 ] || qg_usage "--grace requiere segundos"; grace=$2; shift 2 ;;
+      --run-id)  [ $# -ge 2 ] || qg_usage "--run-id requiere un valor"; run_id=$2; shift 2 ;;
+      --) qg_usage "falta <check-id> antes de --" ;;
+      -*) qg_usage "opción desconocida: $1" ;;
+      *) break ;;
+    esac
+  done
+  [ $# -ge 1 ] || qg_usage "uso: qg run [--timeout S] [--run-id ID] <check-id> -- <comando> [args…]"
+  local id=$1; shift
+  [[ $id =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$id' (permitido: [A-Za-z0-9._-], máx. 64)"
+  [ "${1:-}" = "--" ] || qg_usage "falta -- entre <check-id> y el comando"
+  shift
+  [ $# -ge 1 ] || qg_usage "falta el comando"
+  qg_is_uint "$timeout" || qg_usage "--timeout debe ser un entero >= 0 (0 = sin límite)"
+  qg_is_uint "$grace" || qg_usage "--grace debe ser un entero >= 0"
+  [[ $run_id =~ $QG_RUNID_RE ]] || qg_usage "run-id inválido '$run_id'"
+
+  qg_git_init
+  qg_state_init
+  local dir; dir=$(qg_check_dir "$id")
+  [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || [ -d "$dir" ] || qg_die "$EX_STATE" "no se pudo crear '$dir'"
+
+  qg_fp_compute || qg_die "$EX_STATE" "sin huella inicial no se registra evidencia; el comando no se ejecutó"
+  local fp_start=$QG_FP
+
+  qg_record_reset
+  R_schema=$QG_SCHEMA; R_qg_version=$QG_VERSION; R_check_id=$id; R_run_id=$run_id; R_status=running
+  R_fp_start=$fp_start; R_index_start=$(qg_index_state); R_head_start=$QG_HEAD
+  R_started_epoch=$(qg_now_epoch); R_started_at=$(qg_now_iso); R_timeout_s=$timeout
+  R_pid=$$; R_host=$(qg_host); R_cwd=$PWD; R_argc=$#; R_argv=$(qg_redact_argv "$@")
+  # La secuencia se asigna bajo lock para que el orden entre ejecuciones sea estricto.
+  qg_lock
+  local last seq=1 rec
+  last=$(qg_record_list "$dir" | head -n 1)
+  if [ -n "$last" ] && qg_record_name_ok "$last"; then seq=$((10#${last%%-*} + 1)); fi
+  rec="$dir/$(printf '%09d-%010d' "$seq" "$R_started_epoch")-$$-$RANDOM$RANDOM.rec"
+  qg_atomic_write "$rec" "$(qg_record_body)" || qg_die "$EX_STATE" "no se pudo escribir el registro inicial"
+  qg_unlock
+
+  # Resolver el ejecutable sin shell: solo programas externos (sin funciones ni builtins).
+  local exe="" err=""
+  case $1 in
+    */*) if [ ! -e "$1" ]; then err=not_found; elif [ -d "$1" ] || [ ! -x "$1" ]; then err=not_executable; fi ;;
+    *)   exe=$(type -P "$1" 2>/dev/null) || err=not_found ;;
+  esac
+
+  local rc qg_exit
+  if [ -n "$err" ]; then
+    R_status=error; R_error=$err
+    if [ "$err" = not_found ]; then rc=127; else rc=126; fi
+    R_exit_code=$rc; qg_exit=$rc
+    R_fp_end=$fp_start; R_changed_during_run=0
+    qg_err "'$1': $( [ "$err" = not_found ] && echo 'comando no encontrado' || echo 'no es ejecutable'); no se ejecutó nada"
+  else
+    qg_exec "$timeout" "$grace" "$@"
+    rc=$QG_RC
+    R_exit_code=$rc
+    if [ -n "$QG_SIG" ]; then
+      R_status=interrupted; R_signal=$QG_SIG; qg_exit=$((128 + $(qg_sig_num "$QG_SIG")))
+    elif [ "$QG_TIMED_OUT" = 1 ]; then
+      R_status=timeout; qg_exit=124
+    else
+      R_status=completed; qg_exit=$rc
+    fi
+    if qg_fp_compute; then R_fp_end=$QG_FP; else R_fp_end=unknown; fi
+    if [ "$R_fp_end" = "$fp_start" ]; then R_changed_during_run=0; else R_changed_during_run=1; fi
+  fi
+  R_finished_epoch=$(qg_now_epoch); R_finished_at=$(qg_now_iso)
+  R_duration_s=$((R_finished_epoch - R_started_epoch))
+  qg_atomic_write "$rec" "$(qg_record_body)" || qg_die "$EX_STATE" "no se pudo escribir el registro final"
+
+  local note="vigente"
+  [ "$R_changed_during_run" = 1 ] && note="OBSOLETA: el contenido cambió durante la ejecución"
+  [ "$R_fp_end" = unknown ] && note="INCOMPLETA: no se pudo calcular la huella final"
+  qg_err "check=$id status=$R_status exit=$R_exit_code duración=${R_duration_s}s evidencia=$note"
+  exit "$qg_exit"
+}
+
+# ---------------------------------------------------------------- qg require
+
+qg_required_read() {   # rellena QG_REQUIRED (array). 0 ok, 1 inexistente, 2 corrupto
+  QG_REQUIRED=()
+  local f="$QG_STATE/required" line schema=""
+  [ -e "$f" ] || return 1
+  [ -f "$f" ] && [ ! -L "$f" ] || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      schema=*) schema=${line#schema=} ;;
+      check=*) [[ ${line#check=} =~ $QG_ID_RE ]] || return 2; QG_REQUIRED+=("${line#check=}") ;;
+      "") ;;
+      *) return 2 ;;
+    esac
+  done < "$f"
+  [ "$schema" = "$QG_SCHEMA" ] || return 2
+  return 0
+}
+
+qg_cmd_require() {
+  local clear=0 ids=() i
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --clear) clear=1 ;;
+      -*) qg_usage "opción desconocida: $1" ;;
+      *) [[ $1 =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$1'"; ids+=("$1") ;;
+    esac
+    shift
+  done
+  qg_git_init
+  qg_state_init
+  if [ $clear = 0 ] && [ ${#ids[@]} -eq 0 ]; then
+    local r; qg_required_read; r=$?
+    case $r in
+      0) [ ${#QG_REQUIRED[@]} -gt 0 ] && printf '%s\n' "${QG_REQUIRED[@]}"; return 0 ;;
+      1) qg_err "no hay verificaciones obligatorias declaradas"; return 0 ;;
+      *) qg_die "$EX_STATE" "archivo de requeridos corrupto: $QG_STATE/required (repáralo con: qg require --clear)" ;;
+    esac
+  fi
+  qg_lock
+  local body="schema=$QG_SCHEMA"$'\n'
+  if [ $clear = 0 ]; then
+    for i in "${ids[@]}"; do body="${body}check=$i"$'\n'; done
+  fi
+  qg_atomic_write "$QG_STATE/required" "$body" || qg_die "$EX_STATE" "no se pudo escribir el archivo de requeridos"
+  qg_unlock
+}
+
+# ---------------------------------------------------------------- qg status
+
+# Evalúa un check respecto a la huella actual. Define C_result, C_reason, C_file, C_exit, C_run, C_when.
+qg_eval_check() {
+  local id=$1 filter=$2 d f r other=0 corrupt=0
+  C_result=missing; C_reason=no_records; C_file=""; C_exit=""; C_run=""; C_when=""
+  d=$(qg_check_dir "$id")
+  [ -d "$d" ] || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! qg_record_name_ok "$f"; then corrupt=1; QG_CORRUPT=$((QG_CORRUPT + 1)); continue; fi
+    qg_record_read "$d/$f"; r=$?
+    if [ $r -ne 0 ] || [ "$R_check_id" != "$id" ]; then corrupt=1; QG_CORRUPT=$((QG_CORRUPT + 1)); continue; fi
+    if [ -n "$filter" ] && [ "$R_run_id" != "$filter" ]; then continue; fi
+    local about=0
+    if [ "$R_fp_start" = "$QG_FP" ]; then about=1
+    elif [ "$R_status" != running ] && [ "$R_fp_end" = "$QG_FP" ]; then about=1; fi
+    if [ $about = 0 ]; then other=1; continue; fi
+    C_file=$f; C_exit=$R_exit_code; C_run=$R_run_id; C_when=${R_finished_at:-$R_started_at}
+    case $R_status in
+      running)
+        C_result=incomplete
+        if [ "$R_host" = "$(qg_host)" ] && qg_is_uint "$R_pid" && kill -0 "$R_pid" 2>/dev/null; then C_reason=running
+        else C_reason=abandoned; fi ;;
+      interrupted) C_result=incomplete; C_reason="interrupted:$R_signal" ;;
+      timeout)     C_result=incomplete; C_reason=timeout ;;
+      error)       C_result=blocked;    C_reason=$R_error ;;
+      completed)
+        if [ "$R_fp_end" = unknown ]; then C_result=incomplete; C_reason=no_final_fingerprint
+        elif [ "$R_fp_start" != "$R_fp_end" ]; then C_result=stale; C_reason=changed_during_run
+        elif [ "$R_exit_code" = 0 ]; then C_result=passed; C_reason=""
+        else C_result=failed; C_reason="exit=$R_exit_code"; fi ;;
+    esac
+    break
+  done <<EOF
+$(qg_record_list "$d")
+EOF
+  if [ -z "$C_file" ] && [ $other = 1 ]; then C_result=stale; C_reason=code_changed; fi
+  # Un registro ilegible podría ser el más reciente: nunca se aprueba un check con registros corruptos.
+  if [ $corrupt = 1 ] && [ "$C_result" = passed ]; then C_result=incomplete; C_reason=corrupt_record; fi
+  return 0
+}
+
+qg_rank() {
+  case $1 in failed) echo 6 ;; blocked) echo 5 ;; incomplete) echo 4 ;; stale) echo 3 ;; missing) echo 2 ;; *) echo 1 ;; esac
+}
+
+qg_cmd_status() {
+  local json=0 filter="" req=() from=args
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --json) json=1; shift ;;
+      --run-id) [ $# -ge 2 ] || qg_usage "--run-id requiere un valor"; filter=$2; shift 2 ;;
+      --require) [ $# -ge 2 ] || qg_usage "--require requiere un check-id"
+                 [[ $2 =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$2'"; req+=("$2"); shift 2 ;;
+      *) qg_usage "argumento desconocido: $1" ;;
+    esac
+  done
+  [ -z "$filter" ] || [[ $filter =~ $QG_RUNID_RE ]] || qg_usage "run-id inválido '$filter'"
+  qg_git_init
+  qg_fp_compute || exit "$EX_STATE"
+  if [ ${#req[@]} -eq 0 ]; then
+    from=file
+    local r=1
+    if [ -d "$QG_STATE" ]; then qg_required_read; r=$?; fi
+    [ $r = 2 ] && qg_die "$EX_STATE" "archivo de requeridos corrupto: $QG_STATE/required (repáralo con: qg require --clear)"
+    [ $r = 0 ] && [ ${#QG_REQUIRED[@]} -gt 0 ] && req=("${QG_REQUIRED[@]}")
+  fi
+
+  QG_CORRUPT=0
+  local overall=missing overall_reason="" best=0 id rk lines="" jchecks=""
+  if [ ${#req[@]} -eq 0 ]; then
+    overall=missing; overall_reason=no_required_checks; best=2
+  else
+    best=1; overall=valid
+    for id in "${req[@]}"; do
+      qg_eval_check "$id" "$filter"
+      rk=$(qg_rank "$C_result")
+      if [ "$rk" -gt "$best" ]; then best=$rk; overall=$C_result; fi
+      lines="$lines$(printf '  %-20s %-10s %s' "$id" "$C_result" "${C_reason:+($C_reason) }${C_exit:+exit=$C_exit }${C_run:+run=$C_run }$C_when")"$'\n'
+      jchecks="$jchecks${jchecks:+,}{\"id\":$(qg_json_str "$id"),\"result\":$(qg_json_str "$C_result"),\"reason\":$(qg_json_str "$C_reason"),\"exit_code\":${C_exit:-null},\"run_id\":$(qg_json_str "$C_run"),\"record\":$(qg_json_str "$C_file"),\"finished_at\":$(qg_json_str "$C_when")}"
+    done
+  fi
+  [ "$overall" = passed ] && overall=valid
+
+  local idx; idx=$(qg_index_state)
+  if [ $json = 1 ]; then
+    printf '{"schema":%s,"qg_version":%s,"result":%s,"reason":%s,"fingerprint":%s,"index_fingerprint":%s,"index":%s,"head":%s,"required_from":%s,"run_id_filter":%s,"checks":[%s],"corrupt_records":%s}\n' \
+      "$QG_SCHEMA" "$(qg_json_str "$QG_VERSION")" "$(qg_json_str "$overall")" "$(qg_json_str "$overall_reason")" \
+      "$(qg_json_str "$QG_FP")" "$(qg_json_str "$QG_FP_INDEX")" "$(qg_json_str "$idx")" "$(qg_json_str "$QG_HEAD")" \
+      "$(qg_json_str "$from")" "$(if [ -n "$filter" ]; then qg_json_str "$filter"; else echo null; fi)" \
+      "$jchecks" "$QG_CORRUPT"
+  else
+    printf 'resultado: %s%s\n' "$overall" "${overall_reason:+ ($overall_reason)}"
+    printf 'huella actual: %s\n' "$QG_FP"
+    case $idx in
+      matches) printf 'índice: coincide con el working tree\n' ;;
+      differs) printf 'índice: DIFIERE del working tree (un commit incluiría contenido distinto del verificado)\n' ;;
+      *) printf 'índice: con conflictos\n' ;;
+    esac
+    [ -n "$filter" ] && printf 'filtro run-id: %s\n' "$filter"
+    if [ ${#req[@]} -gt 0 ]; then printf 'verificaciones obligatorias (%s):\n%s' "$from" "$lines"
+    else printf 'no hay verificaciones obligatorias declaradas (qg require <id>… o --require)\n'; fi
+    [ "$QG_CORRUPT" -gt 0 ] && printf 'registros corruptos o ilegibles: %s (qg gc los pone en cuarentena)\n' "$QG_CORRUPT"
+  fi
+  case $overall in
+    valid) return 0 ;; failed) return 1 ;; blocked) return 2 ;; incomplete) return 3 ;;
+    stale) return 4 ;; *) return 5 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- qg show / gc
+
+qg_cmd_show() {
+  [ $# -le 1 ] || qg_usage "uso: qg show [<check-id>]"
+  [ $# -eq 0 ] || [[ $1 =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$1'"
+  qg_git_init
+  [ -d "$QG_STATE/records" ] || { qg_err "sin registros"; return 0; }
+  qg_fp_compute || exit "$EX_STATE"
+  local ids=() d f r mark
+  if [ $# -eq 1 ]; then ids=("$1"); else
+    for d in "$QG_STATE/records"/*; do [ -d "$d" ] && ids+=("${d##*/}"); done
+  fi
+  [ ${#ids[@]} -gt 0 ] || { qg_err "sin registros"; return 0; }
+  printf '%-20s %-11s %-5s %-20s %-20s %s\n' CHECK STATUS EXIT INICIO RUN-ID "HUELLA (inicio→fin)"
+  for d in "${ids[@]}"; do
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      qg_record_read "$QG_STATE/records/$d/$f"; r=$?
+      if [ $r -ne 0 ]; then printf '%-20s %-11s %s\n' "$d" CORRUPTO "$f"; continue; fi
+      mark=""; { [ "$R_fp_start" = "$QG_FP" ] || [ "$R_fp_end" = "$QG_FP" ]; } && mark=" *actual"
+      printf '%-20s %-11s %-5s %-20s %-20s %s→%s%s\n' "$R_check_id" "$R_status" "${R_exit_code:--}" \
+        "$R_started_at" "$R_run_id" "${R_fp_start#*:}" "${R_fp_end#*:}" "$mark" | sed -E 's/([0-9a-f]{12})[0-9a-f]+/\1/g'
+    done <<EOF
+$(qg_record_list "$QG_STATE/records/$d")
+EOF
+  done
+}
+
+qg_cmd_gc() {
+  [ $# -eq 0 ] || qg_usage "uso: qg gc"
+  qg_git_init
+  [ -d "$QG_STATE" ] || return 0
+  qg_lock
+  local tmp_n=0 q_n=0 p_n=0 d f r n
+  # temporales de escrituras interrumpidas (más de 10 min)
+  while IFS= read -r f; do [ -n "$f" ] && rm -f "$f" && tmp_n=$((tmp_n + 1)); done <<EOF
+$(find "$QG_STATE" -type f -name '*.tmp.*' -mmin +10 2>/dev/null)
+EOF
+  mkdir -p "$QG_STATE/quarantine"
+  for d in "$QG_STATE/records"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    n=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      qg_record_read "$d/$f"; r=$?
+      if ! qg_record_name_ok "$f" || [ $r -eq 1 ]; then
+        mv -f "$d/$f" "$QG_STATE/quarantine/${d##*/}.$f" && q_n=$((q_n + 1)); continue
+      fi
+      [ $r -eq 2 ] && continue                       # esquema futuro: no se toca
+      n=$((n + 1))
+      if [ $n -gt "$QG_KEEP_RECORDS" ] && [ "$R_status" != running ]; then rm -f "$d/$f" && p_n=$((p_n + 1)); fi
+    done <<EOF
+$(qg_record_list "$d")
+EOF
+  done
+  qg_unlock
+  qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n"
+}
+
+# ---------------------------------------------------------------- principal
+
+qg_help() {
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+
+Códigos de salida de qg status: 0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale · 5 missing
+qg run devuelve el código real del comando; 124 timeout; 126/127 no ejecutable/no encontrado;
+128+n interrumpido por la señal n. Errores de qg: 64 uso, 65 estado/Git.
+EOF
+}
+
+qg_main() {
+  qg_parse_global "$@"
+  set -- ${QG_ARGS[@]+"${QG_ARGS[@]}"}
+  [ $# -ge 1 ] || { qg_help; exit "$EX_USAGE"; }
+  local sub=$1; shift
+  case $sub in
+    fingerprint|fp) qg_cmd_fingerprint "$@" ;;
+    run)            qg_cmd_run "$@" ;;
+    require)        qg_cmd_require "$@" ;;
+    status)         qg_cmd_status "$@" ;;
+    show)           qg_cmd_show "$@" ;;
+    gc)             qg_cmd_gc "$@" ;;
+    help|-h|--help) qg_help ;;
+    version|--version) printf 'qg %s (schema %s)\n' "$QG_VERSION" "$QG_SCHEMA" ;;
+    *) qg_usage "subcomando desconocido: $sub" ;;
+  esac
+}
+
+qg_main "$@"

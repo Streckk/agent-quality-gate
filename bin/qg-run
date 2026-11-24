@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# qg-run <check-id> -- <comando> [args…]  ≡  qg run …
+# Resuelve enlaces simbólicos sin readlink -f (no existe en macOS antiguo).
+src=$0
+while [ -L "$src" ]; do
+  dir=$(cd "$(dirname "$src")" && pwd -P)
+  src=$(readlink "$src")
+  case $src in /*) ;; *) src="$dir/$src" ;; esac
+done
+dir=$(cd "$(dirname "$src")" && pwd -P)
+exec "${BASH:-bash}" "$dir/qg" run "$@"
