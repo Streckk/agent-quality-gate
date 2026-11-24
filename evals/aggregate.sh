@@ -10,6 +10,8 @@ DIR=$1
 find "$DIR" -name result.kv -type f | LC_ALL=C sort | while IFS= read -r f; do
   [ -f "$(dirname "$f")/eval/result.kv" ] || printf '%s\n' "$f"
 done > "$DIR/.results.lst"
+FILES=()
+while IFS= read -r f; do FILES+=("$f"); done < "$DIR/.results.lst"
 awk -F'=' '
   FNR==1 { file++ }
   { v=$0; sub(/^[^=]*=/, "", v); R[file, $1] = v }
@@ -40,7 +42,7 @@ awk -F'=' '
       printf "case.%s.runs=%d\ncase.%s.ok=%d\ncase.%s.passed=%d\ncase.%s.infra=%d\ncase.%s.false_pass=%d\ncase.%s.failed_checks=%s\n", \
         c, ct[c], c, co[c], c, cp[c], c, ci[c], c, cf[c], c, fails[c]
     }
-  }' $(cat "$DIR/.results.lst") > "$DIR/summary.kv.tmp" 2>/dev/null || : > "$DIR/summary.kv.tmp"
+  }' ${FILES[@]+"${FILES[@]}"} < /dev/null > "$DIR/summary.kv.tmp" 2>/dev/null || : > "$DIR/summary.kv.tmp"
 {
   [ -f "$DIR/run.kv" ] && cat "$DIR/run.kv"
   LC_ALL=C sort "$DIR/summary.kv.tmp"

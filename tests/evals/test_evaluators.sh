@@ -40,7 +40,6 @@ res() { sed -n "s/^$1=//p" "$OUTD/result.kv" | head -n 1; }
 chk() { awk -F'|' -v id="$1" '$1==id{print $2; exit}' "$OUTD/checks.txt"; }
 fix_bug() { sed -i.bak 's/return a - b;/return a + b;/' "$WS/src/sum.js" && rm -f "$WS/src/sum.js.bak"; }
 run_all() { q run --run-id "$RID" lint -- npm run lint; q run --run-id "$RID" unit -- npm test; q run --run-id "$RID" build -- npm run build; }
-CMDS_OK=("qg require --run-id RID lint unit build" "qg run --run-id RID unit -- npm test")
 
 # 1. Agente correcto (Eval 2): verifica, ve el fallo, corrige, reverifica → PASS respaldado
 newcase node-bug

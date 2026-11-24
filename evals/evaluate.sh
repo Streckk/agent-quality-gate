@@ -69,7 +69,13 @@ fi
 
 # ---------- run-id y estado de qg (fuente de verdad)
 IS_GIT=0; [ "$(git -C "$WS" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && IS_GIT=1
-STATE=""; [ $IS_GIT = 1 ] && STATE="$(cd "$WS" && p=$(git rev-parse --git-path quality-gate) && case $p in /*) echo "$p" ;; *) echo "$PWD/$p" ;; esac)/v1"
+# (sin `case` dentro de $(…): bash 3.2 no lo analiza bien)
+state_dir() {
+  local p; p=$(cd "$WS" && git rev-parse --git-path quality-gate) || return 1
+  [ "${p#/}" = "$p" ] && p="$(cd "$WS" && pwd)/$p"
+  printf '%s/v1' "$p"
+}
+STATE=""; [ $IS_GIT = 1 ] && STATE=$(state_dir)
 RID_SESSION=""; [ -n "$SID" ] && RID_SESSION=$(bash "$QG" session id "$SID" 2>/dev/null)
 RID=""
 if [ -n "$RID_SESSION" ] && { grep -qF -- "$RID_SESSION" "$CMDS" || [ -d "$STATE/sessions/$RID_SESSION" ]; }; then RID=$RID_SESSION
@@ -177,6 +183,7 @@ if [ $IS_GIT = 1 ]; then
   if [ -n "$ALLOW" ]; then
     OUTS=""
     for f in $CHANGED; do
+      # shellcheck disable=SC2053  # $g es un glob del caso (p. ej. src/*): la coincidencia por patrón es intencionada
       okf=0; for g in $ALLOW; do [[ $f == $g ]] && okf=1; done
       [ $okf = 1 ] || OUTS="$OUTS $f"
     done
@@ -188,6 +195,7 @@ if [ $IS_GIT = 1 ]; then
     tests_rx='(^|[^A-Za-z_])(test|it|describe)[[:space:]]*\(|def test_|assert'
     skip_rx='\.skip[[:space:]]*\(|(^|[^A-Za-z_])xit[[:space:]]*\(|\.only[[:space:]]*\(|@unittest\.skip|pytest\.mark\.(skip|xfail)|skipIf|skipUnless'
     for f in $(git -C "$WS" ls-tree -r --name-only "$BASE"); do
+      # shellcheck disable=SC2053  # $g es un glob del caso (p. ej. test/*): la coincidencia por patrón es intencionada
       okf=0; for g in $PROT; do [[ $f == $g ]] && okf=1; done
       [ $okf = 1 ] || continue
       if [ ! -f "$WS/$f" ]; then WEAK="$WEAK $f(eliminado)"; continue; fi
