@@ -14,6 +14,13 @@ En el reporte, **no llames "obligatorio" a un guardrail que solo está escrito e
 
 Esta skill es una instrucción. No proporciona garantías por sí misma.
 
+Los **hooks opcionales del plugin** (`Stop`, `PreToolUse`; ver `docs/hooks.md` del repositorio) son controles ejecutables **locales**:
+- piden verificar los cambios sin evidencia vigente;
+- rechazan commits con trailers de IA;
+- piden confirmación para `push`/PR sin evidencia.
+
+Están desactivados por defecto, se pueden desactivar en cualquier momento (`QG_DISABLE=1`) y no ven scripts, alias ni otras herramientas: no sustituyen a la CI ni a la protección de ramas.
+
 ## 2. Acciones que requieren aprobación explícita del usuario
 
 Aunque una verificación o corrección parezca necesitarlas:

@@ -7,11 +7,11 @@
 ## 1. Detectar `qg` y su compatibilidad (Discover)
 
 ```bash
-QG=$(command -v qg 2>/dev/null)
+QG=$(command -v qg 2>/dev/null)   # con el plugin instalado, bin/ del plugin está en el PATH
 # Si no está en PATH: junto a esta skill (instalación por symlink desde el repo agent-quality-gate).
 # <SKILL_DIR> es el directorio base de esta skill que indica Claude Code.
 [ -n "$QG" ] || { d=$(cd -P "<SKILL_DIR>" 2>/dev/null && cd ../.. && pwd); [ -x "$d/bin/qg" ] && QG="$d/bin/qg"; }
-"$QG" version --json        # requiere "schema":1 e "interface" >= 2
+"$QG" version --json        # requiere "schema":1 e "interface" >= 2 (>= 3 para `qg session id`)
 "$QG" -C <repo> fingerprint # exit 65 = no es un repo Git → modo sin qg
 ```
 
@@ -21,13 +21,19 @@ Las variables de shell **no persisten** entre llamadas a Bash: usa la ruta absol
 
 ## 2. Identificador de ejecución (run-id)
 
-Genera **uno por invocación** de la puerta y úsalo literalmente en todos los comandos `qg` de esa invocación:
+Dentro de Claude Code, usa el run-id **de la sesión**. Es el mismo que usan los hooks opcionales (`Stop`, `PreToolUse`), así que la evidencia que registres es la que ellos consultan:
+
+```bash
+"$QG" session id      # → cc-<CLAUDE_CODE_SESSION_ID>; exit 1 si la variable falta o no es válida (requiere interfaz ≥ 3)
+```
+
+Solo si ese comando falla, o la interfaz es 2, genera uno propio para esta invocación:
 
 ```bash
 echo "qg-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"     # p. ej. qg-20261124T171500Z-12345
 ```
 
-Pásalo siempre como `--run-id <ID>`, sin depender de `QG_RUN_ID`. Con run-id, los requisitos y la evidencia quedan aislados de otras sesiones en el mismo worktree: nadie sustituye tus requisitos ni cuenta como tuya la evidencia de otra sesión.
+Úsalo literalmente en todos los comandos `qg` y pásalo siempre como `--run-id <ID>`, sin depender de `QG_RUN_ID`. Si ejecutas varias veces `/quality-gate` en la misma sesión, todas comparten el run-id: la última declaración de obligatorias sustituye a la anterior, lo que es correcto porque se trata de la misma sesión. Con run-id, los requisitos y la evidencia quedan aislados de otras sesiones en el mismo worktree: nadie sustituye tus requisitos ni cuenta como tuya la evidencia de otra sesión.
 
 ## 3. Declarar las obligatorias (`qg require`)
 
