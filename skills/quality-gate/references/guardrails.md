@@ -25,7 +25,8 @@ Aunque una verificación o corrección parezca necesitarlas:
 - publicar paquetes, crear releases, abrir/cerrar PRs o issues,
 - modificar CI, hooks, permisos, reglas de lint/umbrales de cobertura,
 - instalar herramientas globales o descargar y ejecutar scripts,
-- cambiar `git config` (identidad incluida).
+- cambiar `git config` (identidad incluida),
+- enviar código a servicios externos (p. ej. revisión de Codex) cuando el repo lo restrinja o el diff contenga secretos o datos sensibles.
 
 La aprobación vale para la acción concreta que se pidió, no para acciones similares posteriores.
 

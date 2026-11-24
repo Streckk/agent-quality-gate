@@ -30,6 +30,20 @@ Notas verificadas con el plugin 1.0.6 (revalida si la versión cambia):
   - pedir al usuario que ejecute el slash command y comparta la salida.
 - `review` es de solo lectura y no admite texto de foco; para foco o enfoque adversarial, `adversarial-review`.
 - `rescue`/`task --write` **escriben** código: no los uses para revisar.
+- `--wait` bloquea hasta terminar: lanza el Bash con un timeout amplio (hasta 10 min) o en segundo plano si el diff es grande.
+
+Interpretación del resultado (comprobado con 1.0.6):
+
+| Situación | Salida | Clasificación |
+|---|---|---|
+| revisión ejecutada | exit 0, informe con resumen/hallazgos | `review: done` |
+| alcance sin cambios | **exit 0** y "working tree is clean ... no changes to review" | `review: skipped (nothing to review)` — **no** es una revisión hecha |
+| fuera de un repo Git | exit 1, "must run inside a Git repository" | `review: error` |
+| CLI ausente / sin sesión | exit 1, "Codex CLI is not installed..." | `review: skipped (unavailable)` |
+
+Cualquier exit ≠ 0 o salida sin informe de revisión es `error` o `skipped`, nunca `done`.
+
+Privacidad: la revisión envía el diff a un servicio externo (OpenAI). Si las instrucciones del repo restringen compartir código con terceros, o el diff contiene secretos o datos sensibles, no la lances sin aprobación.
 
 ## 2. Política por riesgo
 
@@ -40,6 +54,8 @@ Notas verificadas con el plugin 1.0.6 (revalida si la versión cambia):
 | `high` | `review` + `adversarial-review` con foco en las señales de riesgo detectadas; aprobación humana antes de cerrar |
 
 La config opcional puede ajustar umbrales (`review.min_risk_for_review`, `review.adversarial_at`). Revisiones largas: si el diff es grande, ejecútalas en segundo plano y continúa con otras verificaciones; no esperes en bucle.
+
+Orden: revisa **después** de que las verificaciones pasen, sobre el código final. Si corriges hallazgos de la revisión, reejecuta las verificaciones afectadas; no hace falta repetir la revisión salvo que la corrección sea amplia.
 
 ## 3. Criterios que se piden al revisor
 

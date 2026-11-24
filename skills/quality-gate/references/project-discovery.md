@@ -64,6 +64,8 @@ Comprueba disponibilidad real, no la documentación:
 
 Ante la duda, sube un nivel. Una sola señal `high` hace el cambio `high`.
 
+"Pagos" significa movimiento real de dinero (cobros, procesadores, conciliación). Un cálculo de importes sin movimiento de dinero es `medium` salvo que el repo diga otra cosa. Para fijarlo sin ambigüedad usa `high_risk_paths` en la config opcional. Indica siempre en el reporte qué señal determinó el nivel: el nivel decide el coste de la revisión.
+
 ## 6. Configuración opcional `.agent/verification.yaml`
 
 No es necesaria. Si existe, tiene prioridad sobre la heurística de descubrimiento (pero no sobre `CLAUDE.md`/`AGENTS.md`). Si falta o es inválida, avisa y continúa con el descubrimiento normal.

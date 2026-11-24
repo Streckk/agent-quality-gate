@@ -32,7 +32,11 @@ Para cada verificación registra:
 - resumen de salida (conteo de tests, primer error relevante; no vuelques logs enteros),
 - ruta a reportes generados si existen (junit, coverage).
 
-Un exit code 0 con salida que indica que no se ejecutó nada (p. ej. "no tests found") es `skipped`, no `passed`.
+Un exit code 0 con salida que indica que no se ejecutó nada (p. ej. "no tests found", o tests que se autoexcluyen si falta una variable de entorno) es `skipped`, no `passed`.
+
+Conserva el exit code real: en `cmd | tail` el `$?` es el de `tail`. Usa `${PIPESTATUS[0]}`, redirige a un archivo o no uses pipes.
+
+Archivos auxiliares (sondas, copias de la base): en un directorio de `mktemp -d` fuera del repo, y bórralos al terminar. Si las verificaciones dejan residuos en el repo (`__pycache__`, cachés de build), menciónalos en el reporte.
 
 ## 4. Clasificación de resultados
 
@@ -46,7 +50,7 @@ Un exit code 0 con salida que indica que no se ejecutó nada (p. ej. "no tests f
 ## 5. Bucle de corrección
 
 ```
-iteración = 0
+iteración = 0          # contador global de la ejecución, no por verificación
 mientras haya verificaciones obligatorias en failed:
     si iteración == max_fix_iterations (por defecto 2): parar → bloqueo
     diagnosticar la causa raíz con la salida real
@@ -60,7 +64,7 @@ Reglas:
 
 - Diagnostica antes de tocar código. Si Superpowers está disponible, su skill de depuración sistemática es la herramienta adecuada para fallos no triviales.
 - **No** "arregles" un fallo debilitando la verificación: no borres ni saltes tests, no añadas `@ts-ignore`/`# type: ignore`/`#[allow]`, no relajes reglas de lint ni umbrales, salvo petición explícita del usuario.
-- Si el fallo ya existía antes del cambio (compruébalo, p. ej. con `git stash` solo si es seguro, o contra la rama base), márcalo como **preexistente** y no lo cuentes contra el cambio; repórtalo igualmente.
+- Si el fallo ya existía antes del cambio, márcalo como **preexistente** y no lo cuentes contra el cambio; repórtalo igualmente. Compruébalo **sin tocar el working tree del usuario**: ejecuta la verificación sobre una copia de la base en un directorio temporal (`git archive <base> | tar -x -C "$(mktemp -d)"` o `git worktree add`). No uses `git stash`/`checkout` sobre el working tree.
 - Fallos intermitentes: reintenta una vez; si cambia el resultado, repórtalo como *flaky*, no como `passed`.
 - Si el cambio revisado es del usuario y no pidió correcciones, **pregunta antes de editar**: la puerta puede limitarse a informar.
 

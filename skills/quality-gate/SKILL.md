@@ -43,7 +43,7 @@ Lee [feedback-loops](references/feedback-loops.md). Ejecuta las verificaciones s
 Lee [agent-evals](references/agent-evals.md). Decide si el riesgo exige revisión independiente, úsala si está disponible y **verifica cada hallazgo** antes de actuar. Con `--no-review` la fase queda `skipped (by user)`.
 
 ### 4. Report
-Emite el reporte con el formato de [report-format](references/report-format.md). El veredicto es `PASS` solo si todas las verificaciones obligatorias son `passed` y no quedan hallazgos confirmados sin resolver.
+Emite el reporte con el formato de [report-format](references/report-format.md). El veredicto es `PASS` solo si todas las verificaciones obligatorias son `passed` sobre el código actual (huella de evidencia vigente) y no quedan hallazgos confirmados sin resolver. Si el usuario pidió solo Discover, el veredicto es `NOT VERIFIED`.
 
 ## Proporcionalidad
 
