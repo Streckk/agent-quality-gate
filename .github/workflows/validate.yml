@@ -12,7 +12,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validar estructura, frontmatter y enlaces
         run: bash tests/validate.sh
       - name: Probar que el validador detecta errores
