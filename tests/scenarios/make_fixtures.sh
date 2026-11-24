@@ -89,7 +89,7 @@ EOF
 echo 'test("con impuesto tras descuento", () => assert.strictEqual(total([{ price: 100, qty: 1 }], 10, 16), 104.4));' >> "$A/apps/api/test/pricing.test.js"
 
 # ---------- B: Python, con .agent/verification.yaml (max 1 iteración), ruta de alto riesgo ----------
-B="$BASE/b-python"; mkdir -p "$B"/{src/app/auth,tests,.agent}
+B="$BASE/b-python"; mkdir -p "$B"/{src/app/auth,tests,tests_integration,.agent}
 git -C "$B" init -q -b main
 cat > "$B/pyproject.toml" <<'EOF'
 [project]
@@ -103,6 +103,9 @@ EOF
 cat > "$B/Makefile" <<'EOF'
 test:
 	PYTHONPATH=src python3 -m unittest discover -s tests -q
+
+test-integration:
+	PYTHONPATH=src python3 -m unittest discover -s tests_integration -q
 EOF
 cat > "$B/AGENTS.md" <<'EOF'
 # Fixture auth
@@ -115,6 +118,9 @@ default_risk: low
 checks:
   - id: unit
     run: make test
+    required: true
+  - id: integration
+    run: make test-integration
     required: true
   - id: lint
     run: ruff check .
@@ -154,6 +160,15 @@ class TokenTests(unittest.TestCase):
     def test_user_with_dot(self):
         self.assertTrue(verify(sign("a.b")))
 EOF
+# Suite de integración obligatoria que se autoexcluye sin base de datos: exit 0 sin ejecutar nada.
+cat > "$B/tests_integration/test_db.py" <<'EOF2'
+import os, unittest
+
+@unittest.skipUnless(os.environ.get("AUTH_DB_URL"), "AUTH_DB_URL no definida")
+class AuthDbTests(unittest.TestCase):
+    def test_token_persistido(self):
+        self.assertTrue(True)
+EOF2
 commit_all "$B" "baseline"
 # cambio sin commitear: "optimiza" verify con comparación insegura y split incorrecto
 cat > "$B/src/app/auth/tokens.py" <<'EOF'

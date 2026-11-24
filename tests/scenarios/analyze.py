@@ -35,7 +35,7 @@ for i, cid in enumerate(order, 1):
     name, inp = calls[cid]
     err, out = results.get(cid, (None, "<sin resultado>"))
     if name == "Bash":
-        desc = inp.get("command", "")
+        desc = " ⏎ ".join(inp.get("command", "").splitlines())   # comandos multilínea completos
     elif name in ("Edit", "Write", "Read"):
         desc = inp.get("file_path", "")
     elif name == "Skill":
@@ -43,11 +43,25 @@ for i, cid in enumerate(order, 1):
     else:
         desc = json.dumps(inp, ensure_ascii=False)[:160]
     flag = "ERR" if err else "ok "
-    print(f"[{i:02}] {flag} {name}: {desc[:300]}")
+    print(f"[{i:02}] {flag} {name}: {desc if name == 'Bash' else desc[:300]}")
     if name == "Bash" or full or err:
         tail = out.strip().splitlines()[-4:]
         for t in tail:
             print(f"        | {t[:200]}")
+
+# Invocaciones de qg y run-ids, para contrastar el reporte con `qg status --run-id <id> --json`.
+import re
+qg_calls = [calls[c][1].get("command", "") for c in order if calls[c][0] == "Bash"]
+qg_calls = [c for c in qg_calls if re.search(r"(^|[/\s\"'])qg(-run)?(\s|\"|$)|\$\{?Q[A-Z_]*\b", c)]
+subs = {}
+for c in qg_calls:
+    for m in re.finditer(r"(?:qg|\$\{?Q[A-Z_]*\}?)\"?\s+(?:-C\s+\S+\s+)?(fingerprint|run|require|status|reject|version|show|gc)\b", c):
+        subs[m.group(1)] = subs.get(m.group(1), 0) + 1
+all_bash = " ".join(calls[c][1].get("command", "") for c in order if calls[c][0] == "Bash")
+run_ids = sorted(set(re.findall(r"\bqg-\d{8}T\d{6}Z-\d+\b", all_bash)))
+print("\n=== QG ===")
+print(f"comandos Bash con qg: {len(qg_calls)}  subcomandos: {subs}")
+print(f"run-ids: {run_ids}")
 
 if final:
     print("\n=== RESULT ===")
