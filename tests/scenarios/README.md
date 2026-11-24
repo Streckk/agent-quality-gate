@@ -24,6 +24,15 @@ Para el escenario sin Codex ni Graphify, pasa un `PATH` que solo contenga `node`
 
 Para contrastar un reporte con la evidencia, toma el run-id que muestra `analyze.py` y ejecuta `bin/qg -C <fixture> status --run-id <id>`.
 
+## Escenarios de hooks (plugin cargado con `--plugin-dir`)
+
+| Script | Qué hace |
+|---|---|
+| `make_hook_fixtures.sh <dir> <nombres…>` | repos Node mínimos y limpios, con un remoto `bare` local para probar `push` sin red |
+| `run_hooks_e2e.sh <proyecto> <log.jsonl> "<prompt>" [QG_HOOKS=1 …]` | `claude -p` con `--plugin-dir` de este repo (sin instalar nada) |
+
+Tras cada sesión, contrasta con `bin/qg -C <fixture> status --run-id cc-<session_id>` y con `.git/quality-gate/v1/sessions/cc-<session_id>/stop-marks`, que lista los bloqueos de `Stop`. Resultados: [docs/validacion-v0.2.0-hooks.md](../../docs/validacion-v0.2.0-hooks.md).
+
 ## Ejemplo
 
 ```bash
