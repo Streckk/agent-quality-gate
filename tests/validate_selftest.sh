@@ -79,4 +79,8 @@ expect_fail "eval introducido en un hook"
 copy_repo; chmod -x "$tmp/r/hooks/stop.sh"
 expect_fail "hook sin bit de ejecución"
 
+# Compatibilidad con bash 3.2 (regresión de la CI de macOS)
+copy_repo; printf '\nx="$b→$a"\n' >> "$tmp/r/evals/aggregate.sh"
+expect_fail "variable sin llaves seguida de carácter no ASCII"
+
 (( failures == 0 )) && echo "OK: selftest completo" || { echo "FALLÓ: $failures caso(s)" >&2; exit 1; }

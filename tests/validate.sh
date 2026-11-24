@@ -44,6 +44,21 @@ for f in evals/evaluate.sh evals/run.sh evals/aggregate.sh evals/compare.sh eval
 done
 grep -qx 'runs/' "$ROOT/evals/.gitignore" 2>/dev/null && ok "evals: resultados crudos fuera de git" || fail "evals/.gitignore debe excluir runs/"
 
+# Compatibilidad con bash 3.2: "$var→" hace que bash 3.2 lea los bytes no ASCII como parte del
+# nombre de la variable ("unbound variable" en macOS). Hay que usar "${var}→".
+# [^ -~[:cntrl:]] en locale C = cualquier byte >= 0x80 (portable: GNU grep, BSD grep, ugrep).
+nonascii_var='\$[A-Za-z_][A-Za-z0-9_]*[^ -~[:cntrl:]]'
+bad32=""
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  case $f in */tests/validate.sh|*/tests/validate_selftest.sh) continue ;; esac   # contienen el patrón como ejemplo
+  hits=$(LC_ALL=C grep -nE "$nonascii_var" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | cut -d: -f1 | tr '\n' ',')
+  [ -n "$hits" ] && bad32="$bad32 ${f#"$ROOT"/}:${hits%,}"
+done <<EOF_FILES
+$(find "$ROOT/bin" "$ROOT/hooks" "$ROOT/evals" "$ROOT/tests" -type f \( -name '*.sh' -o -name qg -o -name qg-run \) 2>/dev/null)
+EOF_FILES
+if [ -n "$bad32" ]; then fail "variable sin llaves seguida de carácter no ASCII (bash 3.2):$bad32"; else ok "bash 3.2: sin \$var seguido de no ASCII"; fi
+
 # Hooks: sintaxis y bit de ejecución
 for f in hooks/session-start.sh hooks/stop.sh hooks/pre-tool-use.sh; do
   [[ -f "$ROOT/$f" ]] || continue

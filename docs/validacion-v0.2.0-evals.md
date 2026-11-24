@@ -95,6 +95,10 @@ Limitación declarada: la detección es conservadora (por ejemplo, `cd "$DIR" &&
 
 Los pasos de hooks y evals del job de Linux no llegaron a ejecutarse porque el paso del núcleo falló antes. En local pasan.
 
+Segunda ejecución (`a0813b9`, run 45484297826): **Linux en verde completo** (núcleo, hooks y evals). macOS: núcleo y hooks en verde; evals 46/48. Fallos restantes:
+- **macOS:** `"$b→$a"`. Bash 3.2 lee los bytes de `→` como parte del nombre de la variable (*"b�: unbound variable"*). Se corrigió con `${b}→${a}` y se añadió al validador una regla portable que lo detecta (comprobada contra el código publicado).
+- **ShellCheck SC2053:** la directiva no cubría el `for` que seguía a `okf=0;`. Se sustituyó por `case $f in $g)`.
+
 ## 7. Pendiente
 
 - Ejecutar los casos oficiales y la comparación con y sin plugin (necesita `socat` y consentimiento sobre el coste).
