@@ -37,4 +37,21 @@ expect_fail "referencia obligatoria ausente"
 copy_repo; printf '\nCo-Authored-By: Bot <x@y>\n' >> "$tmp/r/CHANGELOG.md"
 expect_fail "trailer de coautoría"
 
+# Regresión: antes se ignoraba cualquier línea de un README.md o guardrails.md
+copy_repo; printf '\nCo-Authored-By: Bot <x@y>\n' >> "$tmp/r/README.md"
+expect_fail "trailer de coautoría en README (hueco anterior)"
+
+copy_repo; printf '\nCo-Authored-By: Bot <x@y>\n' >> "$tmp/r/examples/README.md"
+expect_fail "trailer de coautoría en examples/README"
+
+# Regresión de política: defectos confirmados en la validación funcional
+copy_repo; sed -i 's/NOT VERIFIED/SIN VERIFICAR/g' "$tmp/r/skills/quality-gate/references/report-format.md"
+expect_fail "regla Discover-only (NOT VERIFIED) eliminada"
+
+copy_repo; sed -i 's/nothing to review/sin cambios/g' "$tmp/r/skills/quality-gate/references/agent-evals.md"
+expect_fail "regla de Codex con árbol limpio eliminada"
+
+copy_repo; echo 'Compruébalo con `git stash` si quieres.' >> "$tmp/r/skills/quality-gate/references/feedback-loops.md"
+expect_fail "recomendación de git stash reintroducida"
+
 (( failures == 0 )) && echo "OK: selftest completo" || { echo "FALLÓ: $failures caso(s)" >&2; exit 1; }

@@ -52,15 +52,36 @@ while IFS= read -r md; do
 done < <(find "$ROOT" -name '*.md' -type f -not -path '*/.git/*')
 ok "enlaces internos revisados"
 
-# 4. Política de autoría: sin créditos de IA en el contenido del repo
-if grep -rIinE 'co-authored-by|generated[- ]by:? *claude|assisted[- ]by:? *claude' \
-     --include='*.md' --include='*.yml' --include='*.yaml' "$ROOT" \
-     --exclude-dir=.git --exclude=validate.sh \
-   | grep -vE 'guardrails\.md|README\.md'; then
+# 4. Política de autoría: sin créditos de IA en el contenido del repo.
+# Solo se permite *mencionar* un trailer dentro de código en línea (`Co-Authored-By`), p. ej. para documentar la política.
+authorship_hits="$(
+  find "$ROOT" -type f \( -name '*.md' -o -name '*.yml' -o -name '*.yaml' \) -not -path '*/.git/*' -print0 \
+  | while IFS= read -r -d '' f; do
+      sed 's/`[^`]*`//g' "$f" \
+      | grep -inE 'co-authored-by|generated[- ]by:? *claude|assisted[- ]by:? *claude' \
+      | sed "s#^#${f#"$ROOT"/}:#"
+    done
+)"
+if [[ -n "$authorship_hits" ]]; then
+  printf '%s\n' "$authorship_hits" >&2
   fail "se encontraron créditos/trailers de IA en el contenido"
 else
   ok "sin trailers de autoría de IA"
 fi
+
+# 6. Reglas de regresión de la política (defectos confirmados en la validación de v0.1.0)
+REFS="$ROOT/skills/quality-gate/references"
+require() { grep -qF -- "$2" "$REFS/$1" || fail "$1: falta regla de regresión: $2"; }
+forbid()  { ! grep -qE -- "$2" "$REFS/$1" || fail "$1: contiene patrón prohibido: $2"; }
+require report-format.md 'NOT VERIFIED'                 # Discover-only no debe salir como BLOCKED
+require report-format.md 'no existe ninguna verificación aplicable'   # docs sin checks no es BLOCKED
+require report-format.md 'Huella de evidencia'          # evidencia obsoleta
+require report-format.md 'nunca** compensa'             # Codex positivo no tapa fallos
+require agent-evals.md   'nothing to review'            # árbol limpio con exit 0 no es revisión hecha
+require agent-evals.md   'servicio externo'             # privacidad del diff
+require feedback-loops.md 'PIPESTATUS'                  # exit code real tras pipes
+forbid  feedback-loops.md 'con `git stash`'             # no tocar el working tree del usuario
+ok "reglas de regresión de la política"
 
 # 5. Alcance de la v1: sin Rust ni motores propios
 if find "$ROOT" -name 'Cargo.toml' -not -path '*/.git/*' -not -path '*/examples/*' | grep -q .; then
