@@ -96,6 +96,10 @@ obj_before=$(find "$R/.git/objects" -type f | wc -l | tr -d ' ')
 fp "$R" >/dev/null; fp "$R" >/dev/null
 assert_eq "$(cksum < "$R/.git/index")" "$idx_before" "sin efectos: .git/index intacto"
 assert_eq "$(find "$R/.git/objects" -type f | wc -l | tr -d ' ')" "$obj_before" "sin efectos: .git/objects intacto"
+# Regresión: con el almacén real como alternativo, git actualizaba el mtime de objetos existentes.
+sleep 1; : > "$TESTS_TMP/marca-obj"; sleep 1
+fp "$R" >/dev/null; printf 'otro\n' > "$R/u2.txt"; fp "$R" >/dev/null; rm -f "$R/u2.txt"
+assert_eq "$(find "$R/.git" -newer "$TESTS_TMP/marca-obj" -type f | wc -l | tr -d ' ')" 0 "sin efectos: ningún archivo de .git modificado (ni mtime de objetos)"
 assert_eq "$(git -C "$R" status --porcelain | sort | tr '\n' ' ')" " M a.txt ?? u.txt " "sin efectos: git status igual"
 git -C "$R" checkout -q -- a.txt; rm "$R/u.txt"
 

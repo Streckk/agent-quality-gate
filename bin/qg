@@ -8,6 +8,8 @@
 #   qg status [--require ID]… [--run-id ID] [--json]  ¿hay evidencia vigente para el estado actual?
 #   qg reject [--run-id ID] <check-id> --reason R   descarta la última evidencia (p. ej. exit 0 sin pruebas)
 #   qg version [--json]                             versión e interfaz
+#   qg session id|start|info|stop …                 estado de sesiones de Claude Code (hooks)
+#   qg hooks status [--json] | enabled <hook>       activación voluntaria de los hooks
 #   qg show [<check-id>]                            lista los registros
 #   qg gc                                           limpia temporales, cuarentena, sesiones antiguas
 # Opción global: -C <dir> (como git -C).
@@ -17,7 +19,7 @@
 
 QG_VERSION="0.2.0-dev"
 QG_SCHEMA=1
-QG_INTERFACE=2          # 2: require/status por sesión (--run-id), reject, version --json
+QG_INTERFACE=3          # 2: require/status por sesión, reject, version · 3: session, hooks (aditiva)
 EX_USAGE=64
 EX_STATE=65
 QG_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
@@ -126,13 +128,14 @@ qg_check_dir() {
 }
 
 # Huella: árbol Git del contenido del working tree (versionados + no versionados no ignorados),
-# calculado con un índice y un almacén de objetos temporales: no modifica el índice ni .git/objects.
+# calculado con un índice y un almacén de objetos temporales SIN el almacén real como alternativo
+# (write-tree --missing-ok): no modifica el índice ni .git/objects, ni siquiera el mtime de los
+# objetos existentes (git los "refresca" si los encuentra en un almacén alternativo).
 # Define QG_FP, QG_FP_INDEX (lo que entraría en un commit) y QG_HEAD.
 qg_fp_compute() {
-  local tmp objdir idx fmt wt it empty
+  local tmp idx fmt wt it empty
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/qg-fp.XXXXXX") || return 1
   mkdir "$tmp/obj" || { rm -rf "$tmp"; return 1; }
-  objdir=$(git rev-parse --git-path objects) && objdir=$(cd "$objdir" && pwd -P) || { rm -rf "$tmp"; return 1; }
   idx=$(git rev-parse --git-path index) || { rm -rf "$tmp"; return 1; }
   fmt=$(git rev-parse --show-object-format 2>/dev/null) || fmt=sha1
   empty=$(git hash-object --no-filters -t tree /dev/null) || { rm -rf "$tmp"; return 1; }
@@ -155,16 +158,16 @@ EOF_FILTERS
     # -p conserva el mtime: la detección de entradas "racy" de Git sigue funcionando.
     cp -p "$idx" "$tmp/index" && cp -p "$idx" "$tmp/index.staged" || { rm -rf "$tmp"; return 1; }
     it=$(GIT_INDEX_FILE="$tmp/index.staged" GIT_OBJECT_DIRECTORY="$tmp/obj" \
-         GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" git ${nf[@]+"${nf[@]}"} write-tree 2>/dev/null) || it=conflicted
+         git ${nf[@]+"${nf[@]}"} write-tree --missing-ok 2>/dev/null) || it=conflicted
   else
     it=$empty
   fi
   wt=$(cd "$QG_TOP" &&
-       GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" \
+       GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" \
          git -c core.fsmonitor=false -c advice.addEmbeddedRepo=false ${nf[@]+"${nf[@]}"} \
          add -A -- . >/dev/null 2>"$tmp/err" &&
-       GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" \
-         git ${nf[@]+"${nf[@]}"} write-tree 2>>"$tmp/err")
+       GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" \
+         git ${nf[@]+"${nf[@]}"} write-tree --missing-ok 2>>"$tmp/err")
   local rc=$?
   if [ $rc -ne 0 ] || [ -z "$wt" ]; then
     qg_err "no se pudo calcular la huella: $(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')"
@@ -798,10 +801,250 @@ EOF
   qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n sesiones=$s_n"
 }
 
+# ---------------------------------------------------------------- qg session (sesiones de Claude Code)
+
+# session_id de Claude Code (UUID u otro identificador seguro). El run-id canónico es cc-<session_id>.
+QG_SID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$'
+QG_SOURCE_RE='^[a-z]{1,16}$'
+
+qg_session_runid() { [[ $1 =~ $QG_SID_RE ]] || return 1; printf 'cc-%s' "$1"; }
+
+qg_session_dir() {
+  local d="$QG_STATE/sessions/$1" x
+  for x in "$QG_STATE/sessions" "$d"; do
+    [ -L "$x" ] && qg_die "$EX_STATE" "'$x' es un enlace simbólico; se rechaza"
+    [ -d "$x" ] || mkdir "$x" 2>/dev/null || [ -d "$x" ] || qg_die "$EX_STATE" "no se pudo crear '$x'"
+  done
+  printf '%s' "$d"
+}
+
+# Lee el estado inicial de una sesión. Define SS_fp, SS_source, SS_at. 0 ok, 1 inexistente, 2 corrupto.
+qg_session_read_start() {
+  local f=$1 line
+  SS_fp=""; SS_source=""; SS_at=""
+  [ -e "$f" ] || return 1
+  [ -f "$f" ] && [ ! -L "$f" ] || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      fingerprint=*) SS_fp=${line#fingerprint=} ;;
+      source=*) SS_source=${line#source=} ;;
+      started_at=*) SS_at=${line#started_at=} ;;
+    esac
+  done < "$f"
+  [[ $SS_fp =~ $QG_FP_RE ]] || return 2
+  return 0
+}
+
+qg_session_parse_runid() {   # --run-id obligatorio para start/info/stop
+  [ -n "$1" ] || qg_usage "--run-id es obligatorio (usa: qg session id)"
+  [[ $1 =~ $QG_RUNID_RE ]] || qg_usage "run-id inválido '$1'"
+}
+
+qg_cmd_session() {
+  local sub=${1:-}; [ $# -gt 0 ] && shift
+  local run_id="" source="unknown" json=0 hook_active=0 max="${QG_STOP_MAX_BLOCKS:-3}"
+  if [ "$sub" = id ]; then
+    [ $# -le 1 ] || qg_usage "uso: qg session id [<session_id>]"
+    local sid="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
+    [ -n "$sid" ] || qg_die 1 "no hay identificador de sesión (CLAUDE_CODE_SESSION_ID vacío)"
+    qg_session_runid "$sid" || qg_die 1 "identificador de sesión inválido"
+    echo; return 0
+  fi
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --run-id) [ $# -ge 2 ] || qg_usage "--run-id requiere un valor"; run_id=$2; shift 2 ;;
+      --source) [ $# -ge 2 ] || qg_usage "--source requiere un valor"; source=$2; shift 2 ;;
+      --max-blocks) [ $# -ge 2 ] || qg_usage "--max-blocks requiere un número"; max=$2; shift 2 ;;
+      --stop-hook-active) hook_active=1; shift ;;
+      --json) json=1; shift ;;
+      *) qg_usage "argumento desconocido: $1" ;;
+    esac
+  done
+  qg_session_parse_runid "$run_id"
+  [[ $source =~ $QG_SOURCE_RE ]] || source=unknown
+  qg_is_uint "$max" || qg_usage "--max-blocks debe ser un entero"
+  qg_git_init
+  case $sub in
+    start)
+      # Registra la huella inicial UNA vez por sesión: reanudar/compactar no la sobrescribe.
+      qg_state_init
+      local d; d=$(qg_session_dir "$run_id")
+      local r; qg_session_read_start "$d/start"; r=$?
+      if [ $r = 0 ]; then printf 'existing %s\n' "$SS_fp"; return 0; fi
+      qg_fp_compute || exit "$EX_STATE"
+      qg_lock
+      qg_session_read_start "$d/start"; r=$?
+      if [ $r = 0 ]; then qg_unlock; printf 'existing %s\n' "$SS_fp"; return 0; fi
+      qg_atomic_write "$d/start" "schema=$QG_SCHEMA"$'\n'"fingerprint=$QG_FP"$'\n'"source=$source"$'\n'"started_at=$(qg_now_iso)"$'\n'"qg_version=$QG_VERSION"$'\n' \
+        || { qg_unlock; qg_die "$EX_STATE" "no se pudo registrar el estado inicial"; }
+      qg_unlock
+      printf 'recorded %s\n' "$QG_FP" ;;
+    info)
+      local d="$QG_STATE/sessions/$run_id" r=1 marks=0 changed=unknown
+      [ -d "$d" ] && [ ! -L "$d" ] && { qg_session_read_start "$d/start"; r=$?; }
+      qg_fp_compute || exit "$EX_STATE"
+      [ $r = 0 ] && { if [ "$SS_fp" = "$QG_FP" ]; then changed=false; else changed=true; fi; }
+      [ -f "$d/stop-marks" ] && marks=$(grep -c . "$d/stop-marks" 2>/dev/null)
+      if [ $json = 1 ]; then
+        printf '{"run_id":%s,"start":%s,"start_fingerprint":%s,"fingerprint":%s,"changed":%s,"stop_blocks":%s}\n' \
+          "$(qg_json_str "$run_id")" "$(qg_json_str "$( case $r in 0) echo recorded ;; 1) echo missing ;; *) echo corrupt ;; esac)")" \
+          "$(qg_json_str "$SS_fp")" "$(qg_json_str "$QG_FP")" "$( [ "$changed" = unknown ] && echo null || echo "$changed")" "${marks:-0}"
+      else
+        printf 'run-id: %s\ninicio: %s %s\nhuella actual: %s\ncambios en la sesión: %s\nbloqueos de Stop: %s\n' \
+          "$run_id" "$( case $r in 0) echo registrado ;; 1) echo ausente ;; *) echo corrupto ;; esac)" "$SS_fp" "$QG_FP" "$changed" "${marks:-0}"
+      fi ;;
+    stop)
+      qg_session_stop "$run_id" "$hook_active" "$max" ;;
+    *) qg_usage "uso: qg session id|start|info|stop" ;;
+  esac
+}
+
+# Decide si el hook Stop debe pedir una verificación. Imprime decision=allow|block y reason=<código>.
+# Política (docs/hooks.md): solo bloquea si hubo cambios en la sesión y la evidencia de la sesión es
+# stale o missing; nunca con stop_hook_active; como máximo una vez por huella y --max-blocks por sesión.
+qg_session_stop() {
+  local run_id=$1 hook_active=$2 max=$3 d r rc status marks=0
+  d="$QG_STATE/sessions/$run_id"
+  out() { printf 'decision=%s\nreason=%s\n' "$1" "$2"; }
+  if [ "$hook_active" = 1 ]; then out allow stop_hook_active; return 0; fi
+  if [ ! -d "$d" ] || [ -L "$d" ]; then out allow no_session_start; return 0; fi
+  qg_session_read_start "$d/start"; r=$?
+  [ $r = 1 ] && { out allow no_session_start; return 0; }
+  [ $r = 2 ] && { out allow session_start_corrupt; return 0; }
+  qg_fp_compute || { out allow fingerprint_error; return 0; }
+  if [ "$QG_FP" = "$SS_fp" ]; then out allow no_changes; return 0; fi
+  ( qg_cmd_status --run-id "$run_id" ) >/dev/null 2>&1; rc=$?
+  case $rc in
+    0) out allow evidence_valid; return 0 ;;
+    1) out allow status_failed; return 0 ;;
+    2) out allow status_blocked; return 0 ;;
+    3) out allow status_incomplete; return 0 ;;
+    4) status=stale ;;
+    5) status=missing ;;
+    *) out allow status_error; return 0 ;;
+  esac
+  qg_lock
+  if [ -f "$d/stop-marks" ] && [ ! -L "$d/stop-marks" ]; then
+    if grep -qFx -- "$QG_FP" "$d/stop-marks"; then qg_unlock; out allow already_blocked_for_fingerprint; return 0; fi
+    marks=$(grep -c . "$d/stop-marks")
+  fi
+  if [ "$marks" -ge "$max" ]; then qg_unlock; out allow max_blocks_reached; return 0; fi
+  local body=""
+  [ -f "$d/stop-marks" ] && body=$(cat "$d/stop-marks")$'\n'
+  qg_atomic_write "$d/stop-marks" "$body$QG_FP"$'\n' || { qg_unlock; out allow mark_error; return 0; }
+  qg_unlock
+  out block "$status"
+}
+
+# ---------------------------------------------------------------- qg hooks (activación voluntaria)
+
+QG_HOOK_NAMES="stop pretool"
+
+# Resuelve H_stop/H_pretool (on|off) y su origen. Precedencia: QG_DISABLE > QG_HOOKS > proyecto > off.
+qg_hooks_resolve() {
+  H_stop=off; H_pretool=off; H_src_stop=default; H_src_pretool=default; H_warn=""
+  local v
+  v=$(printf '%s' "${QG_DISABLE:-}" | tr 'A-Z' 'a-z')
+  case $v in
+    1|true|yes|on) H_src_stop=env:QG_DISABLE; H_src_pretool=env:QG_DISABLE; return 0 ;;
+    ""|0|false|no|off) ;;
+    *) H_warn="${H_warn}QG_DISABLE con valor no reconocido: se trata como desactivación; " 
+       H_src_stop=env:QG_DISABLE; H_src_pretool=env:QG_DISABLE; return 0 ;;
+  esac
+  v=$(printf '%s' "${QG_HOOKS:-}" | tr 'A-Z' 'a-z')
+  if [ -n "$v" ]; then
+    case $v in
+      0|false|no|off|none) H_src_stop=env:QG_HOOKS; H_src_pretool=env:QG_HOOKS; return 0 ;;
+      1|true|yes|on|all) H_stop=on; H_pretool=on; H_src_stop=env:QG_HOOKS; H_src_pretool=env:QG_HOOKS; return 0 ;;
+      *)
+        if [[ $v =~ ^(stop|pretool)(,(stop|pretool))*$ ]]; then
+          H_src_stop=env:QG_HOOKS; H_src_pretool=env:QG_HOOKS
+          case ",$v," in *,stop,*) H_stop=on ;; esac
+          case ",$v," in *,pretool,*) H_pretool=on ;; esac
+          return 0
+        fi
+        H_warn="${H_warn}QG_HOOKS con valor no reconocido ('$v'): ignorado; " ;;
+    esac
+  fi
+  qg_hooks_config
+}
+
+# Subconjunto YAML admitido en .agent/verification.yaml (cualquier otra forma invalida el bloque):
+#   hooks:
+#     stop: on|off|true|false
+#     pretool: on|off|true|false
+qg_hooks_config() {
+  [ -n "${QG_TOP:-}" ] || return 0
+  local f="$QG_TOP/.agent/verification.yaml" line in=0 bad=0 blocks=0 cs="" cp=""
+  [ -e "$f" ] || return 0
+  if [ -L "$f" ] || [ ! -f "$f" ]; then H_warn="${H_warn}$f no es un archivo regular: ignorado; "; return 0; fi
+  local re_head='^hooks:[[:space:]]*(#.*)?$' re_inline='^hooks:' re_blank='^[[:space:]]*(#.*)?$'
+  local re_top='^[^[:space:]]' re_kv='^[[:space:]]+(stop|pretool):[[:space:]]*(on|off|true|false)[[:space:]]*(#.*)?$'
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    if [ $in = 0 ]; then
+      if [[ $line =~ $re_head ]]; then in=1; blocks=$((blocks + 1))
+      elif [[ $line =~ $re_inline ]]; then bad=1; fi
+      continue
+    fi
+    [[ $line =~ $re_blank ]] && continue
+    if [[ $line =~ $re_top ]]; then
+      in=0
+      if [[ $line =~ $re_head ]]; then in=1; blocks=$((blocks + 1)); elif [[ $line =~ $re_inline ]]; then bad=1; fi
+      continue
+    fi
+    if [[ $line =~ $re_kv ]]; then
+      case ${BASH_REMATCH[1]} in
+        stop) [ -n "$cs" ] && bad=1; cs=${BASH_REMATCH[2]} ;;
+        pretool) [ -n "$cp" ] && bad=1; cp=${BASH_REMATCH[2]} ;;
+      esac
+    else
+      bad=1
+    fi
+  done < "$f"
+  [ $blocks -gt 1 ] && bad=1
+  if [ $bad = 1 ]; then H_warn="${H_warn}bloque 'hooks:' de $f malformado: ignorado (hooks desactivados); "; return 0; fi
+  case $cs in on|true) H_stop=on; H_src_stop=project ;; off|false) H_src_stop=project ;; esac
+  case $cp in on|true) H_pretool=on; H_src_pretool=project ;; off|false) H_src_pretool=project ;; esac
+  return 0
+}
+
+qg_cmd_hooks() {
+  local sub=${1:-status}; [ $# -gt 0 ] && shift
+  # Fuera de un repo Git los hooks no pueden obtener evidencia: se resuelven sin configuración de proyecto.
+  QG_TOP=""
+  if command -v git >/dev/null 2>&1 && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+    QG_TOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  fi
+  qg_hooks_resolve
+  case $sub in
+    enabled)
+      [ $# -eq 1 ] || qg_usage "uso: qg hooks enabled <stop|pretool>"
+      case $1 in
+        stop) [ -n "$H_warn" ] && qg_err "$H_warn"; [ "$H_stop" = on ] ;;
+        pretool) [ -n "$H_warn" ] && qg_err "$H_warn"; [ "$H_pretool" = on ] ;;
+        *) qg_usage "hook desconocido '$1' (stop|pretool)" ;;
+      esac ;;
+    status)
+      if [ "${1:-}" = --json ]; then
+        printf '{"stop":{"enabled":%s,"source":%s},"pretool":{"enabled":%s,"source":%s},"repo":%s,"warnings":%s}\n' \
+          "$( [ "$H_stop" = on ] && echo true || echo false)" "$(qg_json_str "$H_src_stop")" \
+          "$( [ "$H_pretool" = on ] && echo true || echo false)" "$(qg_json_str "$H_src_pretool")" \
+          "$(qg_json_str "${QG_TOP:-}")" "$(qg_json_str "$H_warn")"
+      else
+        printf 'stop:    %s (%s)\npretool: %s (%s)\n' "$H_stop" "$H_src_stop" "$H_pretool" "$H_src_pretool"
+        [ -n "$QG_TOP" ] || printf 'repo: (no es un repositorio Git: sin configuración de proyecto)\n'
+        [ -n "$H_warn" ] && printf 'avisos: %s\n' "$H_warn"
+      fi
+      return 0 ;;
+    *) qg_usage "uso: qg hooks status [--json] | qg hooks enabled <stop|pretool>" ;;
+  esac
+}
+
 # ---------------------------------------------------------------- principal
 
 qg_help() {
-  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Códigos de salida de qg status: 0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale · 5 missing
@@ -824,6 +1067,8 @@ qg_main() {
     gc)             qg_cmd_gc "$@" ;;
     help|-h|--help) qg_help ;;
     reject)         qg_cmd_reject "$@" ;;
+    session)        qg_cmd_session "$@" ;;
+    hooks)          qg_cmd_hooks "$@" ;;
     version|--version) qg_cmd_version "$@" ;;
     *) qg_usage "subcomando desconocido: $sub" ;;
   esac
