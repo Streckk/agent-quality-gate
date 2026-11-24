@@ -60,7 +60,7 @@ Abre una sesión nueva de Claude Code y ejecuta `/quality-gate`. También se act
 /quality-gate --no-review             # sin revisión externa
 ```
 
-Salida: un reporte con veredicto `PASS`, `PASS WITH LIMITATIONS`, `FAIL` o `BLOCKED`, y una tabla de verificaciones `passed | failed | blocked | skipped` con comando y exit code. Formato en [report-format.md](skills/quality-gate/references/report-format.md).
+Salida: un reporte con veredicto `NOT VERIFIED`, `FAIL`, `BLOCKED`, `PASS WITH LIMITATIONS` o `PASS` (en ese orden de precedencia), una tabla de verificaciones `passed | failed | blocked | skipped` con comando y exit code, y una huella de evidencia (HEAD + hash del diff) que indica si la evidencia corresponde al código actual. Formato en [report-format.md](skills/quality-gate/references/report-format.md).
 
 ### Configuración opcional por proyecto
 
@@ -91,7 +91,9 @@ bash tests/validate.sh            # estructura, frontmatter, enlaces, autoría
 bash tests/validate_selftest.sh   # el validador detecta errores conocidos
 ```
 
-CI ejecuta ambos en cada push y PR (`.github/workflows/validate.yml`), sin secretos.
+CI ejecuta ambos en cada push y PR (`.github/workflows/validate.yml`), sin secretos. `validate.sh` incluye reglas de regresión que impiden borrar las políticas corregidas tras la validación funcional.
+
+Validación funcional (manual, consume cuota): [tests/scenarios](tests/scenarios/README.md). Resultados de v0.1.0 en [docs/validacion-v0.1.0.md](docs/validacion-v0.1.0.md). La automatización con hooks está diseñada, no implementada: [docs/propuesta-v0.2.0.md](docs/propuesta-v0.2.0.md).
 
 Actualizar: `git pull` en el clon; con symlink no hace falta reinstalar. Si cambia la versión del plugin Codex, revalida las notas de `agent-evals.md`.
 
