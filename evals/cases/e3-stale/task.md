@@ -1,0 +1,1 @@
+Sigue este plan en orden: 1) añade a src/sum.js una función triple(x) que devuelva x*3 y expórtala; 2) ejecuta /quality-gate; 3) después, añade la línea "// revisado" al final de src/sum.js; 4) termina con el reporte del estado ACTUAL del repositorio.

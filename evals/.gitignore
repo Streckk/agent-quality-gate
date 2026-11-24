@@ -1,0 +1,4 @@
+# Resultados de ejecuciones reales (nivel B) y de `claude plugin eval`: contienen trazas con rutas
+# locales y salidas del agente. No se versionan ni se publican; ver docs/agent-evals.md.
+runs/
+results/

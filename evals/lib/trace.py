@@ -1,0 +1,86 @@
+"""Extrae hechos verificables de una traza `claude -p --output-format stream-json --verbose`.
+
+Uso: python3 -I trace.py <traza.jsonl> <directorio-de-salida>
+Escribe en el directorio:
+  facts.kv       session_id, has_result, result_subtype, is_error, api_error, cost_usd, duration_ms, num_turns
+  commands.txt   un comando Bash ejecutado por línea (saltos de línea internos → " ⏎ ")
+  skills.txt     una skill invocada por línea
+  final.txt      el mensaje final (texto del evento result o, si falta, el último mensaje del asistente)
+Solo biblioteca estándar. No ejecuta nada de la traza. Sale con 2 si la traza no existe o está vacía.
+"""
+import json
+import os
+import sys
+
+
+def main():
+    if len(sys.argv) != 3:
+        print(__doc__, file=sys.stderr)
+        return 64
+    path, out = sys.argv[1], sys.argv[2]
+    os.makedirs(out, exist_ok=True)
+    facts = {"session_id": "", "has_result": "0", "result_subtype": "", "is_error": "0",
+             "api_error": "0", "cost_usd": "", "duration_ms": "", "num_turns": "", "parse_errors": "0"}
+    commands, skills, last_text = [], [], ""
+    final = None
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        open(os.path.join(out, "facts.kv"), "w").write("missing_trace=1\n")
+        return 2
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                facts["parse_errors"] = str(int(facts["parse_errors"]) + 1)
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("session_id") and not facts["session_id"]:
+                facts["session_id"] = str(ev["session_id"])
+            t = ev.get("type")
+            if t == "assistant":
+                for c in (ev.get("message") or {}).get("content") or []:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("type") == "tool_use":
+                        inp = c.get("input") or {}
+                        if c.get("name") == "Bash" and isinstance(inp.get("command"), str):
+                            commands.append(inp["command"])
+                        elif c.get("name") == "Skill":
+                            skills.append(str(inp.get("skill", "")))
+                    elif c.get("type") == "text" and isinstance(c.get("text"), str):
+                        last_text = c["text"]
+                if ev.get("error"):
+                    facts["api_error"] = "1"
+            elif t == "result":
+                final = ev
+    if final is not None:
+        facts["has_result"] = "1"
+        facts["result_subtype"] = str(final.get("subtype", ""))
+        facts["is_error"] = "1" if final.get("is_error") else "0"
+        facts["cost_usd"] = str(final.get("total_cost_usd", ""))
+        facts["duration_ms"] = str(final.get("duration_ms", ""))
+        facts["num_turns"] = str(final.get("num_turns", ""))
+        text = final.get("result") if isinstance(final.get("result"), str) else last_text
+    else:
+        text = last_text
+    clean = lambda v: str(v).replace("\n", " ").replace("\r", " ")
+    with open(os.path.join(out, "facts.kv"), "w", encoding="utf-8") as fh:
+        for k, v in facts.items():
+            fh.write(f"{k}={clean(v)}\n")
+    with open(os.path.join(out, "commands.txt"), "w", encoding="utf-8") as fh:
+        for c in commands:
+            fh.write(c.replace("\r", "").replace("\n", " ⏎ ") + "\n")
+    with open(os.path.join(out, "skills.txt"), "w", encoding="utf-8") as fh:
+        for s in skills:
+            fh.write(clean(s) + "\n")
+    with open(os.path.join(out, "final.txt"), "w", encoding="utf-8") as fh:
+        fh.write(text or "")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

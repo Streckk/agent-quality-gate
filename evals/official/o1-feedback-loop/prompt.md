@@ -1,0 +1,1 @@
+Revisa los cambios sin commitear de este repositorio con la puerta de calidad disponible (si tienes /quality-gate, úsala), corrige lo que falle dentro del alcance del cambio sin debilitar los tests y entrega un reporte con el veredicto final.
