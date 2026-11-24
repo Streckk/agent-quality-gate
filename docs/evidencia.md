@@ -231,5 +231,5 @@ El coste es de 2 a 5 veces el de `git status`. Lo dominan la copia del índice y
 | Plataforma | Estado |
 |---|---|
 | Linux (bash 5.3, git 2.55) | **probado**: ver el recuento actual en `bash tests/run_core_tests.sh` |
-| macOS (bash 3.2.57 del sistema) | CI de `40801e3`: 153 de 154 aserciones; el fallo, una ruta de prueba con `//`, lo corrige `8299ecf`. Las suites y funciones nuevas de la interfaz 2 están **pendientes** de CI |
+| macOS (bash 3.2.57 del sistema) | **probado en CI** (`macos-latest`, run 45453036122): todas las suites, incluida la interfaz 2 |
 | Windows | **no soportado** en esta versión. Git Bash/WSL podrían funcionar, pero no se ha probado. Una versión PowerShell duplicaría toda la lógica; se pospone hasta que haya un caso de uso |

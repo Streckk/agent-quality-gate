@@ -7,7 +7,6 @@ status_json() { qg -C "$1" status --json "${@:2}" 2>/dev/null; }
 
 R=$(new_repo)
 printf 'a\n' > "$R/a.txt"; commit_all "$R" base
-ST=$(state_dir "$R")
 
 # --- Estado inexistente
 assert_eq "$(status_rc "$R")" 5 "sin estado: missing (5)"
@@ -165,7 +164,8 @@ dups=$(for d in "$D9"/c*; do ls "$d" | cut -d- -f1 | sort | uniq -d; done | wc -
 assert_eq "$dups" 0 "concurrencia: secuencias únicas por check"
 assert_eq "$(qg -C "$R9" require | tr '\n' ' ')" "c0 c1 c2 " "concurrencia: archivo de requeridos íntegro"
 assert_eq "$(status_rc "$R9")" 0 "concurrencia: valid"
-[ -z "$(ls "$(state_dir "$R9")" | grep -E '^lock')" ] && ok "concurrencia: sin locks residuales" || ko "concurrencia: lock residual"
+residual=0; for f in "$(state_dir "$R9")"/lock*; do [ -e "$f" ] && residual=1; done
+[ "$residual" = 0 ] && ok "concurrencia: sin locks residuales" || ko "concurrencia: lock residual"
 
 # --- Dos sesiones distintas (run-id)
 R10=$(new_repo); printf 'x\n' > "$R10/x"; commit_all "$R10" b

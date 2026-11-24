@@ -18,7 +18,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 - Pruebas: `tests/core/test_sessions.sh`; filtros clean; modificaciones externas y simultáneas. Total: 188 aserciones.
 - Fixture Python con una suite obligatoria que sale con exit 0 sin ejecutar pruebas. El analizador de trazas contrasta los reportes con los run-ids.
 - `docs/validacion-v0.2.0-dev.md`: escenarios reales A–F, defectos y limitaciones.
-- CI: ShellCheck como paso informativo (no bloquea).
+- CI: ShellCheck **bloqueante** sobre `bin/` y `tests/`. Se corrigieron los avisos reales (`"$*"` en `qg_usage`, variable `exe` sin uso, `ls | grep` en las pruebas, variables sin uso). El SC2034 de las variables `R_*` se documenta como falso positivo: se leen por expansión indirecta.
 
 ### Corregido
 - `qg fingerprint` ejecutaba los filtros clean configurados (p. ej. git-lfs), también desde `git write-tree` con entradas "racy". Ahora se neutralizan.

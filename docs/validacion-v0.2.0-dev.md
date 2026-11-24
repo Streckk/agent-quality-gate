@@ -62,8 +62,9 @@ Ver [evidencia.md §6](evidencia.md#6-rendimiento-medido): entre 54 y 186 ms de 
 ## 6. Compatibilidad y CI
 
 - Linux: todo lo anterior.
-- macOS (bash 3.2.57): 153 de 154 aserciones pasaron en la CI de `40801e3`. El único fallo, la ruta con `//`, lo corrige `8299ecf`, que está en local. Las suites y funciones nuevas de esta iteración **no se han ejecutado todavía en macOS**: lo hará la CI cuando se autorice el push.
-- ShellCheck: no está instalado en local y no se ha ejecutado. Se añadió a la CI como paso informativo (`continue-on-error`).
+- macOS (bash 3.2.57): la CI de `40801e3` falló en 1 de 154 aserciones, por una ruta con `//`. `8299ecf` lo corrige, y en `1fba94e` pasan las 188 aserciones, incluidas las de esta iteración.
+- **CI de `1fba94e`** (run 45453036122): `validate`, `qg (ubuntu)` y `qg (macos, bash 3.2.57)` pasan; macOS ejecuta las 188 aserciones dos veces (bash por defecto y `/bin/bash`).
+- ShellCheck 0.11 (en la CI; no está instalado en local) reportó en ese run 9 avisos en `bin/qg` y 4 en las pruebas. Se corrigieron los reales y se documentó el falso positivo SC2034 de las variables `R_*`. El paso pasa a ser bloqueante: su resultado limpio se comprobará en la siguiente ejecución de la CI.
 - Windows: no soportado ni probado.
 
 ## 7. Limitaciones

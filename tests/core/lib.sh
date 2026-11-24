@@ -41,8 +41,10 @@ state_dir() {
 }
 # Registro más reciente de un check.
 last_record() {
-  local d; d="$(state_dir "$1")/records/$2"
-  ls -1 "$d" 2>/dev/null | grep '\.rec$' | LC_ALL=C sort -r | head -n 1 | sed "s#^#$d/#"
+  # Los nombres empiezan por una secuencia de 9 dígitos: el último del glob (ordenado) es el más reciente.
+  local d f last=""; d="$(state_dir "$1")/records/$2"
+  for f in "$d"/*.rec; do [ -e "$f" ] && last=$f; done
+  [ -n "$last" ] && printf '%s\n' "$last"
 }
 field() { sed -n "s/^$2=//p" "$1" | head -n 1; }
 

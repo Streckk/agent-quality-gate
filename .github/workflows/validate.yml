@@ -17,8 +17,7 @@ jobs:
         run: bash tests/validate.sh
       - name: Probar que el validador detecta errores
         run: bash tests/validate_selftest.sh
-      - name: ShellCheck (informativo; preinstalado en el runner, no bloquea todavía)
-        continue-on-error: true
+      - name: ShellCheck (preinstalado en el runner)
         run: |
           shellcheck --version
           shellcheck -s bash -S warning bin/qg bin/qg-run tests/*.sh tests/core/*.sh tests/scenarios/*.sh

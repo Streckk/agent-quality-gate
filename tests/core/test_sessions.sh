@@ -2,7 +2,6 @@
 # Aislamiento entre sesiones concurrentes en el mismo worktree (requisitos y evidencia por run-id).
 . "$(dirname "$0")/lib.sh"
 
-srun() { local id=$1; shift; qg -C "$R" "$@" 2>/dev/null; }
 src() { qg -C "$R" status --run-id "$1" >/dev/null 2>&1; echo $?; }
 
 R=$(new_repo); printf 'x\n' > "$R/x"; commit_all "$R" base

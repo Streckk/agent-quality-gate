@@ -32,7 +32,7 @@ umask 077
 
 qg_err()   { printf 'qg: %s\n' "$*" >&2; }
 qg_die()   { local code=$1; shift; qg_err "$@"; exit "$code"; }
-qg_usage() { qg_die "$EX_USAGE" "$@ (ver: qg help)"; }
+qg_usage() { qg_die "$EX_USAGE" "$* (ver: qg help)"; }
 
 qg_now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 qg_now_epoch() { date +%s; }
@@ -431,6 +431,7 @@ qg_exec() {
   QG_CHILD=""
 }
 
+# shellcheck disable=SC2034  # las variables R_* se leen por expansión indirecta en qg_record_body
 qg_cmd_run() {
   local timeout="${QG_TIMEOUT:-3600}" grace="${QG_GRACE:-10}" run_id="${QG_RUN_ID:-unspecified}"
   while [ $# -gt 0 ]; do
@@ -469,10 +470,10 @@ qg_cmd_run() {
   local rec; rec=$(qg_record_create "$dir") || exit "$EX_STATE"
 
   # Resolver el ejecutable sin shell: solo programas externos (sin funciones ni builtins).
-  local exe="" err=""
+  local err=""
   case $1 in
     */*) if [ ! -e "$1" ]; then err=not_found; elif [ -d "$1" ] || [ ! -x "$1" ]; then err=not_executable; fi ;;
-    *)   exe=$(type -P "$1" 2>/dev/null) || err=not_found ;;
+    *)   type -P "$1" >/dev/null 2>&1 || err=not_found ;;
   esac
 
   local rc qg_exit
@@ -619,7 +620,7 @@ qg_rank() {
 }
 
 qg_cmd_status() {
-  local json=0 filter="${QG_RUN_ID:-}" req=() from=args
+  local json=0 filter="${QG_RUN_ID:-}" req=() from="args"
   while [ $# -gt 0 ]; do
     case $1 in
       --json) json=1; shift ;;
@@ -635,7 +636,7 @@ qg_cmd_status() {
   if [ ${#req[@]} -eq 0 ]; then
     # Con run-id solo cuentan los requisitos de ESA sesión (nunca se heredan los del worktree ni los de otra).
     local rf; rf=$(qg_required_file "$filter")
-    if [ -n "$filter" ]; then from="session:$filter"; else from=file; fi
+    if [ -n "$filter" ]; then from="session:$filter"; else from="file"; fi
     local r=1
     if [ -d "$QG_STATE" ]; then qg_required_read "$rf"; r=$?; fi
     [ $r = 2 ] && qg_die "$EX_STATE" "archivo de requeridos corrupto: $rf (repáralo con: qg require --clear)"
@@ -688,6 +689,7 @@ qg_cmd_status() {
 
 # Registra que la última evidencia de un check sobre la huella actual NO es aceptable (p. ej. exit 0
 # sin pruebas ejecutadas). Solo puede degradar: el check pasa a blocked hasta una nueva ejecución.
+# shellcheck disable=SC2034  # las variables R_* se leen por expansión indirecta en qg_record_body
 qg_cmd_reject() {
   local run_id="${QG_RUN_ID:-unspecified}" reason="" id=""
   while [ $# -gt 0 ]; do
