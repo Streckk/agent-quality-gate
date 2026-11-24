@@ -15,8 +15,24 @@ for f in README.md CHANGELOG.md \
          skills/quality-gate/references/agent-evals.md \
          skills/quality-gate/references/guardrails.md \
          skills/quality-gate/references/project-discovery.md \
-         skills/quality-gate/references/report-format.md; do
+         skills/quality-gate/references/report-format.md \
+         bin/qg bin/qg-run docs/evidencia.md tests/run_core_tests.sh; do
   [[ -f "$ROOT/$f" ]] && ok "existe $f" || fail "falta $f"
+done
+
+# 1b. Ejecutables de evidencia: sintaxis bash y bit de ejecución
+for f in bin/qg bin/qg-run; do
+  [[ -f "$ROOT/$f" ]] || continue
+  bash -n "$ROOT/$f" 2>/dev/null && ok "sintaxis $f" || fail "$f: error de sintaxis bash"
+  [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
+done
+# Sin eval en los ejecutables (requisito de seguridad del ejecutor).
+for f in bin/qg bin/qg-run; do
+  if [[ -f "$ROOT/$f" ]] && grep -vE '^[[:space:]]*#' "$ROOT/$f" | grep -qE '(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)'; then
+    fail "$f: usa eval"
+  else
+    ok "$f: sin eval"
+  fi
 done
 
 # 2. Frontmatter de cada SKILL.md

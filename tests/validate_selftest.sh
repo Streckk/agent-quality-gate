@@ -54,4 +54,11 @@ expect_fail "regla de Codex con árbol limpio eliminada"
 copy_repo; echo 'Compruébalo con `git stash` si quieres.' >> "$tmp/r/skills/quality-gate/references/feedback-loops.md"
 expect_fail "recomendación de git stash reintroducida"
 
+# Evidencia ejecutable: sin eval y con bit de ejecución
+copy_repo; printf '\nx=1; eval "y=$x"\n' >> "$tmp/r/bin/qg"
+expect_fail "eval introducido en bin/qg"
+
+copy_repo; chmod -x "$tmp/r/bin/qg"
+expect_fail "bin/qg sin bit de ejecución"
+
 (( failures == 0 )) && echo "OK: selftest completo" || { echo "FALLÓ: $failures caso(s)" >&2; exit 1; }

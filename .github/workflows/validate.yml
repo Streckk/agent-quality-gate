@@ -17,3 +17,20 @@ jobs:
         run: bash tests/validate.sh
       - name: Probar que el validador detecta errores
         run: bash tests/validate_selftest.sh
+
+  evidencia:
+    name: qg (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Pruebas de bin/qg
+        run: bash tests/run_core_tests.sh
+      - name: Pruebas de bin/qg con /bin/bash del sistema (3.2 en macOS)
+        if: runner.os == 'macOS'
+        env:
+          QG_BASH: /bin/bash
+        run: /bin/bash tests/run_core_tests.sh
