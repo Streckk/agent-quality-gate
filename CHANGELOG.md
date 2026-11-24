@@ -4,6 +4,23 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (v0.2.0-dev: infraestructura de evidencia, sin hooks)
+- `bin/qg` y `bin/qg-run` (bash ≥ 3.2 + git):
+  - `fingerprint`: huella por contenido del working tree, sin escribir en el índice ni en `.git/objects`;
+  - `run`: ejecuta un único comando sin shell, con timeout, reenvío de señales, grupo de procesos y argv redactado;
+  - `require`: declara las verificaciones obligatorias;
+  - `status`: `valid`/`failed`/`blocked`/`incomplete`/`stale`/`missing`;
+  - `show` y `gc`.
+- Estado en `.git/quality-gate/v1/`: un registro inmutable por ejecución con escritura atómica, lock con recuperación segura, aislamiento por worktree y cuarentena de registros corruptos.
+- `tests/run_core_tests.sh` y `tests/core/` (154 aserciones: huella, ejecutor, persistencia, concurrencia y extremo a extremo).
+- `docs/evidencia.md`: diseño, límites y correspondencia con `report-format.md`.
+
+### Corregido (durante el desarrollo)
+- Carrera al recuperar locks: un proceso podía retirar el lock recién creado por otro (detectado por la prueba de concurrencia).
+
+### Cambiado
+- `docs/propuesta-v0.2.0.md`: decisiones finales y nueva integración de hooks basada en `qg`.
+
 ### Corregido
 - Veredictos: precedencia explícita; nuevo `NOT VERIFIED` para ejecuciones solo Discover; un cambio sin verificaciones aplicables y de riesgo bajo ya no sale como `BLOCKED`.
 - Revisión de Codex: un árbol limpio (exit 0, "nothing to review") se clasifica `skipped`, no como revisión hecha; tabla de interpretación de resultados; aviso de que el diff se envía a un servicio externo.

@@ -1,6 +1,16 @@
 # Propuesta técnica v0.2.0 — automatización con hooks
 
-> Estado: **propuesta, no implementada**. Revalidar el contrato de hooks contra la documentación vigente de Claude Code antes de implementar.
+> Estado: la **infraestructura de evidencia está implementada** (`bin/qg`, ver [evidencia.md](evidencia.md)). Los **hooks no están implementados**. Revalidar el contrato de hooks contra la documentación vigente de Claude Code antes de implementarlos.
+
+## Decisiones finales de la iteración de evidencia (difieren de esta propuesta)
+
+| Propuesta original | Decisión implementada | Motivo |
+|---|---|---|
+| huella = HEAD + `git diff HEAD` + no versionados | árbol Git del working tree (`git add -A` + `write-tree` en índice y almacén temporales) | `git diff HEAD` no representa bien renombres, binarios ni repos sin commits; el árbol es canónico, depende del contenido, coincide con `HEAD^{tree}` en limpio y no escribe en `.git/objects` |
+| un `state.json` con lock | registros inmutables por ejecución + `required` con lock | sin jq, reescribir JSON en bash es frágil; los registros hacen que las ejecuciones concurrentes no compitan entre sí |
+| HMAC con clave en `~/.config` | descartado | sin una clave fuera del alcance del propio agente no protege nada; la garantía real es CI |
+| scripts POSIX `sh` + PowerShell | bash ≥ 3.2 + git; sin PowerShell | `sh` POSIX no puede leer listas separadas por NUL ni pasar argv sin `eval`; PowerShell duplicaría toda la lógica sin un caso de uso probado |
+| `PostToolUse` marca `dirty` | no hace falta para la validez: `qg status` recalcula la huella bajo demanda | ver "Integración de hooks" más abajo |
 
 ## Principio
 
@@ -16,7 +26,7 @@ Distribución: empaquetar como **plugin de Claude Code** (`.claude-plugin/plugin
 - Coste: `git diff | sha256sum` es O(tamaño del diff). En repos enormes, usar `git status --porcelain=v2` + mtimes como prefiltro.
 - Salida: silenciosa (exit 0, sin `additionalContext`), para no gastar contexto ni interferir con otras skills.
 
-## 2. Registrar el estado de verificación de forma segura
+## 2. Registrar el estado de verificación de forma segura (superado: ver evidencia.md)
 
 - Ubicación: `$(git rev-parse --git-path quality-gate)/state.json`. Queda dentro de `.git`, no se versiona y es por worktree. Sin Git: `${XDG_STATE_HOME:-~/.local/state}/quality-gate/<sha256(ruta)>.json`.
 - Contenido: `{schema, session_id, fingerprint_current, dirty, last_verification: {fingerprint, verdict, checks: [{id, cmd, exit, started, ended}], report_hash}}`.
@@ -24,7 +34,7 @@ Distribución: empaquetar como **plugin de Claude Code** (`.claude-plugin/plugin
 - **Quién escribe `last_verification`**: no el texto del modelo. Se propone un pequeño ejecutor `qg-run <id> -- <cmd>` que ejecuta el comando, captura el exit code real y la huella **en el momento de ejecutar**, y lo anexa al estado. La skill lo usaría en Verify. No es un motor de orquestación: ejecuta un único comando y lo registra.
 - Limitación declarada: un agente con Bash podría editar `state.json`. Mitigación parcial: HMAC del registro con una clave en `~/.config/quality-gate/key` (fuera del repo). Disuade los errores, no a un actor malicioso con acceso al home. La garantía real es CI.
 
-## 3. Impedir que evidencia antigua valide cambios nuevos
+## 3. Impedir que evidencia antigua valide cambios nuevos (superado: ver evidencia.md)
 
 - Una verificación solo cuenta si `check.fingerprint == fingerprint_current`.
 - Cualquier `PostToolUse` que cambie la huella deja obsoletas todas las verificaciones previas: no se "arrastran" `passed`.
@@ -90,7 +100,7 @@ Coexistencia con Codex: el plugin Codex tiene su propio `Stop` (review gate, `re
 | `tests/validate.sh` y su autotest en este repo | ya existe |
 | revisiones humanas requeridas para rutas de alto riesgo (`CODEOWNERS`) | decisión humana, no del agente |
 
-## Archivos de la siguiente etapa
+## Archivos de la siguiente etapa (lista original; actualizada al final del documento)
 
 Crear:
 - `.claude-plugin/plugin.json`: manifiesto del plugin.
@@ -111,3 +121,38 @@ Modificar:
 - `examples/*/verification.yaml`: claves nuevas.
 - `tests/validate.sh`: estructura del plugin y `hooks.json`.
 - `README.md` y `CHANGELOG.md`.
+
+## Integración de hooks propuesta (siguiente iteración, sobre `qg`)
+
+Con la evidencia ya disponible, los hooks se simplifican: **no necesitan guardar estado propio**, porque preguntan a `qg`.
+
+| Hook | Acción | Coste |
+|---|---|---|
+| `SessionStart` (opcional) | `qg fingerprint` → guarda la huella inicial de la sesión en `quality-gate/v1/sessions/<session_id>` | 1 huella |
+| `PostToolUse` | **no necesario para la validez**. Opcional: avisar una sola vez de que la evidencia quedó obsoleta tras la primera edición | 0–1 huella por herramienta |
+| `Stop` | si la huella actual ≠ la de inicio de sesión (hubo cambios) y `qg status` ≠ `valid` → `{"decision":"block","reason":"…qg status: <resultado>…"}`. No bloquea si `stop_hook_active=true`, ni más de una vez por huella (se registra en `sessions/<id>`). Escape: `QG_DISABLE=1` | 1 huella + lectura de registros (≈ coste de `git status`) |
+| `PreToolUse` (Bash) | para `git commit`, rechaza trailers de IA en el mensaje. Para `git push`/`gh pr create` con `qg status` ≠ `valid` → `ask`, no `deny` | solo en esos comandos |
+
+Requisitos para empezar:
+
+1. Las obligatorias del proyecto declaradas con `qg require` (o derivadas por la skill de `.agent/verification.yaml`).
+2. La skill usa `qg-run <id> -- <cmd>` en la fase Verify cuando `qg` esté disponible, y hace como hasta ahora si no lo está.
+3. Empaquetado como plugin con hooks **desactivados por defecto**.
+
+### Archivos de la siguiente iteración
+
+Crear:
+- `.claude-plugin/plugin.json`
+- `hooks/hooks.json`
+- `hooks/stop.sh`
+- `hooks/pre-tool-use.sh`
+- `hooks/session-start.sh`
+- `tests/hooks/*.sh`, con JSON de entrada simulados por evento, incluido el ciclo de `Stop`.
+
+Modificar:
+- `skills/quality-gate/references/feedback-loops.md`: usar `qg-run`.
+- `references/report-format.md`: la huella se toma de `qg status --json`.
+- `references/project-discovery.md`: `qg require` a partir de los checks obligatorios.
+- `bin/qg`: subcomando `session` (inicio y marcas de bloqueo).
+- `.github/workflows/validate.yml`
+- `README.md` y `CHANGELOG.md`

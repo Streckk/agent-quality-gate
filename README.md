@@ -66,6 +66,20 @@ Salida: un reporte con veredicto `NOT VERIFIED`, `FAIL`, `BLOCKED`, `PASS WITH L
 
 `.agent/verification.yaml` permite declarar checks, límite de iteraciones, umbrales de revisión, rutas de alto riesgo y comandos prohibidos. Es opcional. Esquema en [project-discovery.md](skills/quality-gate/references/project-discovery.md#6-configuración-opcional-agentverificationyaml) y ejemplos en [examples/](examples/).
 
+## Evidencia ejecutable: `qg` (v0.2.0-dev, en desarrollo)
+
+`bin/qg` (bash + git, sin otras dependencias) registra qué código se verificó, qué comando se ejecutó, su exit code real y si esa evidencia sigue vigente. Funciona sin Claude Code:
+
+```bash
+export PATH="$HOME/Desarrollo/agent-quality-gate/bin:$PATH"
+qg require lint unit
+qg-run lint -- npm run lint
+qg-run unit -- pytest -q
+qg status        # valid | failed | blocked | incomplete | stale | missing
+```
+
+Todavía no está integrado en la skill ni en hooks. Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md).
+
 ## Integraciones opcionales
 
 | Integración | Uso | Si falta |
@@ -89,6 +103,7 @@ Nota sobre Codex (plugin 1.0.6): `/codex:review` y `/codex:adversarial-review` n
 ```bash
 bash tests/validate.sh            # estructura, frontmatter, enlaces, autoría
 bash tests/validate_selftest.sh   # el validador detecta errores conocidos
+bash tests/run_core_tests.sh      # pruebas deterministas de bin/qg (repos temporales)
 ```
 
 CI ejecuta ambos en cada push y PR (`.github/workflows/validate.yml`), sin secretos. `validate.sh` incluye reglas de regresión que impiden borrar las políticas corregidas tras la validación funcional.
