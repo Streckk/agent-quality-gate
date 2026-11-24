@@ -132,7 +132,19 @@ qg_check_dir() {
 # (write-tree --missing-ok): no modifica el índice ni .git/objects, ni siquiera el mtime de los
 # objetos existentes (git los "refresca" si los encuentra en un almacén alternativo).
 # Define QG_FP, QG_FP_INDEX (lo que entraría en un commit) y QG_HEAD.
+# La huella es una instantánea: si otro proceso crea o borra archivos mientras `git add` los
+# recorre ("unable to stat"), se reintenta. Solo se informa el error si fallan todos los intentos.
 qg_fp_compute() {
+  local attempt QG_FP_QUIET=1
+  for attempt in 1 2 3 4 5; do
+    [ "$attempt" = 5 ] && QG_FP_QUIET=0
+    qg_fp_compute_once && return 0
+    sleep "0.$attempt" 2>/dev/null || sleep 1
+  done
+  return 1
+}
+
+qg_fp_compute_once() {
   local tmp idx fmt wt it empty
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/qg-fp.XXXXXX") || return 1
   mkdir "$tmp/obj" || { rm -rf "$tmp"; return 1; }
@@ -170,7 +182,7 @@ EOF_FILTERS
          git ${nf[@]+"${nf[@]}"} write-tree --missing-ok 2>>"$tmp/err")
   local rc=$?
   if [ $rc -ne 0 ] || [ -z "$wt" ]; then
-    qg_err "no se pudo calcular la huella: $(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')"
+    [ "${QG_FP_QUIET:-0}" = 1 ] || qg_err "no se pudo calcular la huella: $(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')"
     rm -rf "$tmp"; return 1
   fi
   rm -rf "$tmp"
@@ -882,14 +894,16 @@ qg_cmd_session() {
       [ -d "$d" ] && [ ! -L "$d" ] && { qg_session_read_start "$d/start"; r=$?; }
       qg_fp_compute || exit "$EX_STATE"
       [ $r = 0 ] && { if [ "$SS_fp" = "$QG_FP" ]; then changed=false; else changed=true; fi; }
+      local st_en st_es   # (sin `case` dentro de $(…): bash 3.2 no lo analiza bien)
+      case $r in 0) st_en=recorded; st_es=registrado ;; 1) st_en=missing; st_es=ausente ;; *) st_en=corrupt; st_es=corrupto ;; esac
       [ -f "$d/stop-marks" ] && marks=$(grep -c . "$d/stop-marks" 2>/dev/null)
       if [ $json = 1 ]; then
         printf '{"run_id":%s,"start":%s,"start_fingerprint":%s,"fingerprint":%s,"changed":%s,"stop_blocks":%s}\n' \
-          "$(qg_json_str "$run_id")" "$(qg_json_str "$( case $r in 0) echo recorded ;; 1) echo missing ;; *) echo corrupt ;; esac)")" \
+          "$(qg_json_str "$run_id")" "$(qg_json_str "$st_en")" \
           "$(qg_json_str "$SS_fp")" "$(qg_json_str "$QG_FP")" "$( [ "$changed" = unknown ] && echo null || echo "$changed")" "${marks:-0}"
       else
         printf 'run-id: %s\ninicio: %s %s\nhuella actual: %s\ncambios en la sesión: %s\nbloqueos de Stop: %s\n' \
-          "$run_id" "$( case $r in 0) echo registrado ;; 1) echo ausente ;; *) echo corrupto ;; esac)" "$SS_fp" "$QG_FP" "$changed" "${marks:-0}"
+          "$run_id" "$st_es" "$SS_fp" "$QG_FP" "$changed" "${marks:-0}"
       fi ;;
     stop)
       qg_session_stop "$run_id" "$hook_active" "$max" ;;

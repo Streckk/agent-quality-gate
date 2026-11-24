@@ -119,12 +119,13 @@ qg -C "$R" status --require externo >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 4 "cambio externo durante ejecución: status=stale"
 git -C "$R" checkout -q -- a.txt
 
-# Huella calculada mientras otro proceso escribe sin parar: nunca falla ni bloquea
-( i=0; while [ $i -lt 400 ]; do echo $i > "$R/hot.txt"; i=$((i + 1)); done ) &
+# Huella calculada mientras otro proceso CREA Y BORRA un archivo sin parar ("unable to stat").
+# Regresión: sin reintentos fallaba ~15 % de las veces (detectado en CI).
+( i=0; while [ $i -lt 6000 ]; do echo $i > "$R/hot.txt"; rm -f "$R/hot.txt"; i=$((i + 1)); done ) &
 WP=$!
 errs=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do qg -C "$R" fingerprint >/dev/null 2>&1 || errs=$((errs + 1)); done
-wait $WP
+for _ in $(seq 1 30); do qg -C "$R" fingerprint >/dev/null 2>&1 || errs=$((errs + 1)); done
+kill $WP 2>/dev/null; wait $WP 2>/dev/null
 assert_eq "$errs" 0 "huella con escrituras simultáneas: sin errores"
 rm -f "$R/hot.txt"
 
