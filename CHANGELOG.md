@@ -4,6 +4,18 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (Agent Evals)
+- `evals/`: 11 casos (`case.conf` con criterios explícitos + `task.md`), fixtures Git reproducibles (`refs/eval/base`) y:
+  - evaluador determinista que consulta `qg status --json`, registros, `git` y la traza (falsos `PASS`, obligatorias omitidas, evidencia obsoleta o ajena, tests debilitados, alcance, iteraciones, guardrails, Codex simulado o innecesario, bloqueos de `Stop`, errores de infraestructura aparte);
+  - runner bajo demanda con `--session-id`, `--max-cost-usd` y casos `opt-in`;
+  - agregación de métricas con denominadores y comparación entre ejecuciones.
+- Nivel A en CI: `tests/run_eval_tests.sh` (48 aserciones; Linux y macOS con bash 3.2).
+- `evals/official/`: casos en formato `claude plugin eval` (aislamiento y rama sin plugin). La carga se verificó sin coste; no se ejecutaron porque falta `socat`.
+- `docs/agent-evals.md` y `docs/validacion-v0.2.0-evals.md`.
+
+### Corregido (hooks)
+- `PreToolUse`: `git commit -F -` sin heredoc, pipes, redirecciones, `$(…)`, comillas invertidas, `$VAR` y archivos ilegibles pasaban sin decisión. Ahora devuelven `ask`; el `deny` se mantiene si se ve un trailer.
+
 ### Añadido (plugin y hooks opcionales)
 - Plugin de Claude Code: `.claude-plugin/plugin.json` (sin licencia declarada; es decisión del propietario) y `hooks/hooks.json`. `claude plugin validate --strict` pasa.
 - Hooks, **desactivados por defecto** (`QG_HOOKS`, bloque `hooks:` de `.agent/verification.yaml`, `QG_DISABLE`):

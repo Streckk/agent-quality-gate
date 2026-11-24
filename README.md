@@ -99,6 +99,23 @@ QG_HOOKS=1 claude --plugin-dir /ruta/a/agent-quality-gate     # probar sin insta
 
 Los hooks no invocan modelos ni ejecutan pruebas. Comparten con la skill el run-id de sesión (`cc-<session_id>`). Se activan con `QG_HOOKS=1` o con el bloque `hooks:` de `.agent/verification.yaml`, y se desactivan con `QG_DISABLE=1`. Son **controles locales, no garantías**: lo obligatorio para todos los colaboradores va en CI y protección de ramas. Detalle: [docs/hooks.md](docs/hooks.md). Validación: [docs/validacion-v0.2.0-hooks.md](docs/validacion-v0.2.0-hooks.md).
 
+## Agent Evals (v0.2.0-dev)
+
+Evaluaciones repetibles del comportamiento de `/quality-gate`, con criterios objetivos. Un evaluador determinista consulta `qg status --json`, los registros, `git` y la traza, y detecta:
+
+- falsos `PASS` y verificaciones obligatorias omitidas;
+- evidencia obsoleta o de otra sesión;
+- tests debilitados y cambios fuera de alcance;
+- operaciones sensibles;
+- revisiones de Codex simuladas o innecesarias.
+
+```bash
+bash tests/run_eval_tests.sh                 # nivel A: sin modelos (CI)
+bash evals/run.sh --case e2-feedback-loop    # nivel B: Claude real, bajo demanda (consume cuota)
+```
+
+Detalle: [docs/agent-evals.md](docs/agent-evals.md). Resultados: [docs/validacion-v0.2.0-evals.md](docs/validacion-v0.2.0-evals.md).
+
 ## Integraciones opcionales
 
 | Integración | Uso | Si falta |
@@ -124,6 +141,7 @@ bash tests/validate.sh            # estructura, frontmatter, enlaces, autoría
 bash tests/validate_selftest.sh   # el validador detecta errores conocidos
 bash tests/run_core_tests.sh      # pruebas deterministas de bin/qg (repos temporales)
 bash tests/run_hook_tests.sh      # pruebas de los hooks con entradas JSON simuladas
+bash tests/run_eval_tests.sh      # Agent Evals nivel A (sin modelos)
 claude plugin validate --strict . # validación oficial del plugin
 ```
 

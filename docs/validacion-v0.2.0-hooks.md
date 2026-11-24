@@ -80,6 +80,15 @@ Coste aproximado de las sesiones reales: 8 sesiones cortas, de 7 a 39 s cada una
 | 4 | `${CLAUDE_PLUGIN_ROOT}` sin comillas en los comandos de los hooks | `claude plugin validate` | comandos entrecomillados | `validate.sh` + autotest |
 | 5 | Pruebas mal planteadas (`\\n` frente a `\n` en el JSON, `HOOK_RC` en un subshell, argumento de herramienta ignorado) | fallos de la primera ejecución | pruebas corregidas; los escapes `\u` se verifican con los bytes exactos | — |
 
+## 4b. Actualización (iteración de Agent Evals)
+
+Verificado después en sesiones reales ([validacion-v0.2.0-evals.md](validacion-v0.2.0-evals.md)):
+- `--resume`, `--continue`, `--fork-session`, `/clear` y subagentes;
+- el diálogo interactivo de `ask` y que la aprobación no es permanente;
+- el `deny` interactivo.
+
+`PreToolUse` también se corrigió para mensajes no verificables (`-F -`, pipes, `$VAR`…).
+
 ## 5. Observaciones y limitaciones
 
 - **Skill duplicada:** con el symlink global apuntando a esta misma copia, Claude Code registró **una sola** skill (`quality-gate`), probablemente porque deduplica por ruta real. Con el plugin instalado en otra ruta habría dos (ver [hooks.md §2](hooks.md#evitar-la-skill-duplicada)).

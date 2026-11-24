@@ -90,8 +90,10 @@ Consultar el estado efectivo: `qg hooks status` (o `--json`) dentro del reposito
 | Situación | Comportamiento |
 |---|---|
 | sesión nueva | `SessionStart` (`startup`) registra la huella inicial |
-| sesión reanudada (`--resume <id>`) | mismo `session_id`: se conserva la huella inicial original y no se sobrescribe |
-| `/clear` | Claude Code cambia el `session_id`: empieza una sesión nueva con su propia huella inicial |
+| sesión reanudada (`--resume <id>`, `--continue`) | **verificado**: mismo `session_id` (`source: resume`); se conserva la huella inicial; sin cambios nuevos no hay bloqueo falso (la huella ya marcada no vuelve a bloquear); con cambios nuevos, un bloqueo |
+| `--resume <id> --fork-session` | **verificado**: `session_id` nuevo (`source: fork`) con su propio estado; no hereda bloqueos |
+| `/clear` | **verificado**: `session_id` nuevo (`source: clear`); sesión nueva con su propia huella inicial |
+| subagentes | **verificado**: su `PreToolUse` llega con el mismo `session_id` y su `agent_id`. `SubagentStop` se dispara, pero el plugin no lo registra, así que los subagentes no se bloquean. El `Stop` principal evalúa los cambios que hicieron |
 | varias invocaciones de `/quality-gate` en la misma sesión | comparten run-id; la última declaración de obligatorias sustituye a la anterior |
 | dos sesiones simultáneas en el mismo worktree | run-ids distintos: ni requisitos ni evidencia se mezclan; el código es compartido, así que un cambio de una deja `stale` a la otra |
 | worktrees distintos | estado separado (`git rev-parse --git-path`) |
@@ -143,11 +145,15 @@ Complementa los permisos nativos, que siguen siendo la primera línea de defensa
 |---|---|
 | `git commit` cuyo texto contiene un trailer o crédito de IA (`Co-Authored-By:`, `Co-developed-by:`, `Generated/Assisted… by/with Claude/Codex/…`) | `deny` |
 | `git commit -F <archivo>` con trailer (archivo literal dentro del repositorio) | `deny` |
-| `git commit -F` con archivo fuera del repo, inexistente o ruta no literal (`"$VAR"`) | `ask` |
+| `git commit -F` con archivo fuera del repo, inexistente, ilegible o ruta no literal (`"$VAR"`) | `ask` |
+| `git commit -F -` / `--file=-` sin heredoc en el comando, o con pipe (`… \| git commit -F -`) o redirección (`< archivo`) | `ask`: el mensaje llega por stdin desde una fuente no revisable |
+| mensaje con contenido dinámico: `$VAR`, `$(…)` o `` `…` ``, salvo el patrón `$(cat <<'EOF' … EOF)` cuyo texto sí está en el comando | `ask` |
 | `git commit -c/-C` (reutiliza otro mensaje) | `ask` |
 | `git commit --amend` sin mensaje nuevo, si el commit actual tiene un trailer | `deny` |
 | `git push` / `gh pr create` sin evidencia `valid` de la sesión | `ask`. La aprobación vale solo para esa operación |
 | cualquier otro caso | sin decisión: rigen los permisos normales |
+
+Principio: **si el hook no puede verificar el mensaje que recibirá Git, pregunta (`ask`); si ve un trailer prohibido, deniega (`deny`)**. Nunca ejecuta el comando para averiguar el contenido. Corrección v0.2.0-dev: antes, `git commit -F -` y los mensajes con `$VAR`/`$(…)` pasaban sin decisión. El contenido dinámico se detecta de forma conservadora en todo el comando, así que `cd "$DIR" && git commit -m "x"` también pide confirmación.
 
 Las expresiones regulares solo se usan para **detectar palabras** (`git`, `commit`, `push`…) y **extraer rutas literales simples**. Si algo no se puede analizar con fiabilidad, el resultado es `ask` o ninguna decisión, nunca una aprobación. La detección es **conservadora**: `bash -c "git push"` también pide confirmación.
 
@@ -172,8 +178,7 @@ Las expresiones regulares solo se usan para **detectar palabras** (`git`, `commi
   - trailers añadidos por `commit.template`, por hooks de Git (`prepare-commit-msg`) o por el editor.
   
   Las políticas que deben cumplirse para cualquier colaborador van en **CI y protección de ramas**.
-- **`Stop` depende de que la skill use el run-id de la sesión.** Si `CLAUDE_CODE_SESSION_ID` no está disponible, la evidencia de la skill no cuenta para el hook, que pedirá verificar una vez.
-- Al reanudar con `--continue`/`--resume` sin id, Claude Code puede exponer un id distinto en el Bash. No se ha probado; podría causar un bloqueo de más, nunca un `valid` de más.
+- **`Stop` depende de que la skill use el run-id de la sesión.** Si `CLAUDE_CODE_SESSION_ID` no está disponible, la evidencia de la skill no cuenta para el hook, que pedirá verificar una vez. En 2.1.331, `CLAUDE_CODE_SESSION_ID` coincidió con el `session_id` de los hooks en todos los casos probados: nueva, `--resume`, `--continue`, `--fork-session`, `/clear` y subagente.
 - `ask` en modo no interactivo (`claude -p`): ver el resultado observado en [validacion-v0.2.0-hooks.md](validacion-v0.2.0-hooks.md).
 - La huella excluye los archivos ignorados y los cambios dentro de submódulos ([evidencia.md](evidencia.md)).
 - Windows no está soportado ni probado.
