@@ -109,6 +109,25 @@ assert_eq "$(field "$REC" changed_during_run)" 1 "cambio durante ejecución: det
 assert_ne "$(field "$REC" fp_start)" "$(field "$REC" fp_end)" "cambio durante ejecución: huellas distintas"
 git -C "$R" checkout -q -- a.txt
 
+# Modificación EXTERNA (otro proceso) durante la ejecución → stale, aunque el comando salga con 0
+( sleep 1; echo externo >> "$R/a.txt" ) &
+qg -C "$R" run externo -- sleep 2 2>/dev/null; rc=$?
+wait
+assert_eq "$rc" 0 "cambio externo durante ejecución: exit 0 real del comando"
+assert_eq "$(field "$(last_record "$R" externo)" changed_during_run)" 1 "cambio externo durante ejecución: detectado"
+qg -C "$R" status --require externo >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 4 "cambio externo durante ejecución: status=stale"
+git -C "$R" checkout -q -- a.txt
+
+# Huella calculada mientras otro proceso escribe sin parar: nunca falla ni bloquea
+( i=0; while [ $i -lt 400 ]; do echo $i > "$R/hot.txt"; i=$((i + 1)); done ) &
+WP=$!
+errs=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do qg -C "$R" fingerprint >/dev/null 2>&1 || errs=$((errs + 1)); done
+wait $WP
+assert_eq "$errs" 0 "huella con escrituras simultáneas: sin errores"
+rm -f "$R/hot.txt"
+
 # Resultado posterior a una modificación: la evidencia previa queda obsoleta
 qg -C "$R" run post -- true 2>/dev/null
 printf 'b\n' >> "$R/a.txt"

@@ -117,6 +117,24 @@ assert_ne "$(fp "$W")" "$MAIN_FP" "worktree modificado: su huella cambia"
 assert_eq "$(fp "$R")" "$MAIN_FP" "worktree modificado: la del principal no cambia"
 assert_ne "$(state_dir "$W")" "$(state_dir "$R")" "worktree: directorio de estado propio"
 
+# Filtros clean/process configurados (p. ej. git-lfs): calcular la huella NO debe ejecutarlos.
+# Regresión: git write-tree ejecutaba el filtro al comprobar entradas "racy" del índice copiado.
+F=$(new_repo)
+SPY="$TESTS_TMP/spy.marker"; : > "$SPY"
+git -C "$F" config filter.spy.clean "sh -c 'echo x >> \"$SPY\"; cat'"
+git -C "$F" config filter.spy.required true
+printf '* filter=spy\n' > "$F/.gitattributes"
+printf 'v0\n' > "$F/a.dat"; commit_all "$F" base
+: > "$SPY"
+FF0=$(fp "$F")                                   # inmediatamente tras el commit: entradas racy
+printf 'v1\n' > "$F/a.dat"; FF1=$(fp "$F")
+printf 'nuevo\n' > "$F/b.dat"; FF2=$(fp "$F")
+assert_eq "$(wc -l < "$SPY" | tr -d ' ')" 0 "filtros: ninguna ejecución del filtro clean (incl. entradas racy)"
+assert_ne "$FF1" "$FF0" "filtros: un archivo filtrado modificado cambia la huella"
+assert_ne "$FF2" "$FF1" "filtros: un archivo filtrado nuevo cambia la huella"
+assert_eq "$(fp "$F")" "$FF2" "filtros: huella estable"
+assert_eq "$(git -C "$F" config filter.spy.clean | cut -c1-5)" "sh -c" "filtros: la configuración del repo no se modifica"
+
 # Sin Git: error explícito, nunca una huella
 NG=$(mktemp -d "$TESTS_TMP/nogit.XXXXXX")
 out=$(cd "$NG" && GIT_CEILING_DIRECTORIES="$TESTS_TMP" qg fingerprint 2>&1); rc=$?

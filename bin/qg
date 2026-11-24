@@ -4,10 +4,12 @@
 # Subcomandos:
 #   qg fingerprint [--json]                         huella del contenido actual del repositorio
 #   qg run [opciones] <check-id> -- <cmd> [args…]  ejecuta UN comando y registra evidencia
-#   qg require [--clear] [<check-id>…]              declara las verificaciones obligatorias
+#   qg require [--run-id ID] [--clear] [<id>…]      declara las verificaciones obligatorias (por sesión)
 #   qg status [--require ID]… [--run-id ID] [--json]  ¿hay evidencia vigente para el estado actual?
+#   qg reject [--run-id ID] <check-id> --reason R   descarta la última evidencia (p. ej. exit 0 sin pruebas)
+#   qg version [--json]                             versión e interfaz
 #   qg show [<check-id>]                            lista los registros
-#   qg gc                                           limpia temporales, cuarentena registros corruptos
+#   qg gc                                           limpia temporales, cuarentena, sesiones antiguas
 # Opción global: -C <dir> (como git -C).
 #
 # Requisitos: bash >= 3.2 y git >= 2.25. Sin jq, Node ni Python.
@@ -15,9 +17,11 @@
 
 QG_VERSION="0.2.0-dev"
 QG_SCHEMA=1
+QG_INTERFACE=2          # 2: require/status por sesión (--run-id), reject, version --json
 EX_USAGE=64
 EX_STATE=65
 QG_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+QG_REASON_RE='^[a-z0-9][a-z0-9_-]{0,63}$'
 QG_RUNID_RE='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
 QG_FP_RE='^(sha1|sha256):[0-9a-f]{40}([0-9a-f]{24})?$'
 QG_KEEP_RECORDS="${QG_KEEP_RECORDS:-50}"
@@ -131,20 +135,36 @@ qg_fp_compute() {
   objdir=$(git rev-parse --git-path objects) && objdir=$(cd "$objdir" && pwd -P) || { rm -rf "$tmp"; return 1; }
   idx=$(git rev-parse --git-path index) || { rm -rf "$tmp"; return 1; }
   fmt=$(git rev-parse --show-object-format 2>/dev/null) || fmt=sha1
-  empty=$(git hash-object -t tree /dev/null) || { rm -rf "$tmp"; return 1; }
+  empty=$(git hash-object --no-filters -t tree /dev/null) || { rm -rf "$tmp"; return 1; }
+  # Neutraliza los filtros clean/process configurados (p. ej. git-lfs o filtros propios): calcular la
+  # huella no debe ejecutar procesos externos ni producir efectos secundarios. Se aplica a TODOS los
+  # comandos git de este cálculo: write-tree también ejecuta el filtro al comprobar entradas "racy". Los archivos con
+  # filtro que cambian se identifican por su contenido sin filtrar (ver docs/evidencia.md).
+  local nf=() key drv seen=" "
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    drv=${key#filter.}; drv=${drv%.*}
+    case $drv in ""|*=*) continue ;; esac
+    case $seen in *" $drv "*) continue ;; esac
+    seen="$seen$drv "
+    nf+=(-c "filter.$drv.clean=" -c "filter.$drv.process=" -c "filter.$drv.required=false")
+  done <<EOF_FILTERS
+$(git config --name-only --get-regexp '^filter[.]' 2>/dev/null)
+EOF_FILTERS
   if [ -f "$idx" ]; then
     # -p conserva el mtime: la detección de entradas "racy" de Git sigue funcionando.
     cp -p "$idx" "$tmp/index" && cp -p "$idx" "$tmp/index.staged" || { rm -rf "$tmp"; return 1; }
     it=$(GIT_INDEX_FILE="$tmp/index.staged" GIT_OBJECT_DIRECTORY="$tmp/obj" \
-         GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" git write-tree 2>/dev/null) || it=conflicted
+         GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" git ${nf[@]+"${nf[@]}"} write-tree 2>/dev/null) || it=conflicted
   else
     it=$empty
   fi
   wt=$(cd "$QG_TOP" &&
        GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" \
-         git -c core.fsmonitor=false -c advice.addEmbeddedRepo=false add -A -- . >/dev/null 2>"$tmp/err" &&
+         git -c core.fsmonitor=false -c advice.addEmbeddedRepo=false ${nf[@]+"${nf[@]}"} \
+         add -A -- . >/dev/null 2>"$tmp/err" &&
        GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objdir" \
-         git write-tree 2>>"$tmp/err")
+         git ${nf[@]+"${nf[@]}"} write-tree 2>>"$tmp/err")
   local rc=$?
   if [ $rc -ne 0 ] || [ -z "$wt" ]; then
     qg_err "no se pudo calcular la huella: $(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')"
@@ -305,6 +325,9 @@ qg_record_read() {
     completed|timeout|interrupted|error)
       qg_is_uint "$R_exit_code" || return 1
       [[ $R_fp_end =~ $QG_FP_RE ]] || [ "$R_fp_end" = unknown ] || return 1 ;;
+    rejected)
+      [ "$R_fp_end" = "$R_fp_start" ] || return 1
+      [[ $R_error =~ $QG_REASON_RE ]] || return 1 ;;
     *) return 1 ;;
   esac
   return 0
@@ -322,6 +345,19 @@ qg_record_list() {
     f=${f##*/}
     printf '%s\n' "$f"
   done | LC_ALL=C sort -r
+}
+
+# Crea un registro nuevo con el contenido actual de R_* y devuelve su ruta. La secuencia se asigna
+# bajo lock para que el orden entre ejecuciones del mismo check sea estricto.
+qg_record_create() {
+  local dir=$1 last seq=1 rec
+  qg_lock
+  last=$(qg_record_list "$dir" | head -n 1)
+  if [ -n "$last" ] && qg_record_name_ok "$last"; then seq=$((10#${last%%-*} + 1)); fi
+  rec="$dir/$(printf '%09d-%010d' "$seq" "$R_started_epoch")-$$-$RANDOM$RANDOM.rec"
+  if ! qg_atomic_write "$rec" "$(qg_record_body)"; then qg_unlock; qg_err "no se pudo escribir el registro"; return 1; fi
+  qg_unlock
+  printf '%s' "$rec"
 }
 
 # ---------------------------------------------------------------- qg fingerprint
@@ -430,14 +466,7 @@ qg_cmd_run() {
   R_fp_start=$fp_start; R_index_start=$(qg_index_state); R_head_start=$QG_HEAD
   R_started_epoch=$(qg_now_epoch); R_started_at=$(qg_now_iso); R_timeout_s=$timeout
   R_pid=$$; R_host=$(qg_host); R_cwd=$PWD; R_argc=$#; R_argv=$(qg_redact_argv "$@")
-  # La secuencia se asigna bajo lock para que el orden entre ejecuciones sea estricto.
-  qg_lock
-  local last seq=1 rec
-  last=$(qg_record_list "$dir" | head -n 1)
-  if [ -n "$last" ] && qg_record_name_ok "$last"; then seq=$((10#${last%%-*} + 1)); fi
-  rec="$dir/$(printf '%09d-%010d' "$seq" "$R_started_epoch")-$$-$RANDOM$RANDOM.rec"
-  qg_atomic_write "$rec" "$(qg_record_body)" || qg_die "$EX_STATE" "no se pudo escribir el registro inicial"
-  qg_unlock
+  local rec; rec=$(qg_record_create "$dir") || exit "$EX_STATE"
 
   # Resolver el ejecutable sin shell: solo programas externos (sin funciones ni builtins).
   local exe="" err=""
@@ -480,9 +509,15 @@ qg_cmd_run() {
 
 # ---------------------------------------------------------------- qg require
 
-qg_required_read() {   # rellena QG_REQUIRED (array). 0 ok, 1 inexistente, 2 corrupto
+# Archivo de requeridos: por sesión si hay run-id; si no, el del worktree.
+qg_required_file() {
+  if [ -n "$1" ]; then printf '%s/sessions/%s/required' "$QG_STATE" "$1"
+  else printf '%s/required' "$QG_STATE"; fi
+}
+
+qg_required_read() {   # $1 = archivo. Rellena QG_REQUIRED (array). 0 ok, 1 inexistente, 2 corrupto
   QG_REQUIRED=()
-  local f="$QG_STATE/required" line schema=""
+  local f=$1 line schema=""
   [ -e "$f" ] || return 1
   [ -f "$f" ] && [ ! -L "$f" ] || return 2
   while IFS= read -r line || [ -n "$line" ]; do
@@ -498,31 +533,40 @@ qg_required_read() {   # rellena QG_REQUIRED (array). 0 ok, 1 inexistente, 2 cor
 }
 
 qg_cmd_require() {
-  local clear=0 ids=() i
+  local clear=0 ids=() i run_id="${QG_RUN_ID:-}"
   while [ $# -gt 0 ]; do
     case $1 in
-      --clear) clear=1 ;;
+      --clear) clear=1; shift ;;
+      --run-id) [ $# -ge 2 ] || qg_usage "--run-id requiere un valor"; run_id=$2; shift 2 ;;
       -*) qg_usage "opción desconocida: $1" ;;
-      *) [[ $1 =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$1'"; ids+=("$1") ;;
+      *) [[ $1 =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$1'"; ids+=("$1"); shift ;;
     esac
-    shift
   done
+  [ -z "$run_id" ] || [[ $run_id =~ $QG_RUNID_RE ]] || qg_usage "run-id inválido '$run_id'"
   qg_git_init
   qg_state_init
+  local f; f=$(qg_required_file "$run_id")
   if [ $clear = 0 ] && [ ${#ids[@]} -eq 0 ]; then
-    local r; qg_required_read; r=$?
+    local r; qg_required_read "$f"; r=$?
     case $r in
       0) [ ${#QG_REQUIRED[@]} -gt 0 ] && printf '%s\n' "${QG_REQUIRED[@]}"; return 0 ;;
       1) qg_err "no hay verificaciones obligatorias declaradas"; return 0 ;;
-      *) qg_die "$EX_STATE" "archivo de requeridos corrupto: $QG_STATE/required (repáralo con: qg require --clear)" ;;
+      *) qg_die "$EX_STATE" "archivo de requeridos corrupto: $f (repáralo con: qg require --clear)" ;;
     esac
+  fi
+  if [ -n "$run_id" ]; then
+    local d
+    for d in "$QG_STATE/sessions" "$QG_STATE/sessions/$run_id"; do
+      [ -L "$d" ] && qg_die "$EX_STATE" "'$d' es un enlace simbólico; se rechaza"
+      [ -d "$d" ] || mkdir "$d" 2>/dev/null || [ -d "$d" ] || qg_die "$EX_STATE" "no se pudo crear '$d'"
+    done
   fi
   qg_lock
   local body="schema=$QG_SCHEMA"$'\n'
   if [ $clear = 0 ]; then
     for i in "${ids[@]}"; do body="${body}check=$i"$'\n'; done
   fi
-  qg_atomic_write "$QG_STATE/required" "$body" || qg_die "$EX_STATE" "no se pudo escribir el archivo de requeridos"
+  qg_atomic_write "$f" "$body" || qg_die "$EX_STATE" "no se pudo escribir el archivo de requeridos"
   qg_unlock
 }
 
@@ -553,6 +597,7 @@ qg_eval_check() {
       interrupted) C_result=incomplete; C_reason="interrupted:$R_signal" ;;
       timeout)     C_result=incomplete; C_reason=timeout ;;
       error)       C_result=blocked;    C_reason=$R_error ;;
+      rejected)    C_result=blocked;    C_reason="rejected:$R_error" ;;
       completed)
         if [ "$R_fp_end" = unknown ]; then C_result=incomplete; C_reason=no_final_fingerprint
         elif [ "$R_fp_start" != "$R_fp_end" ]; then C_result=stale; C_reason=changed_during_run
@@ -574,7 +619,7 @@ qg_rank() {
 }
 
 qg_cmd_status() {
-  local json=0 filter="" req=() from=args
+  local json=0 filter="${QG_RUN_ID:-}" req=() from=args
   while [ $# -gt 0 ]; do
     case $1 in
       --json) json=1; shift ;;
@@ -588,10 +633,12 @@ qg_cmd_status() {
   qg_git_init
   qg_fp_compute || exit "$EX_STATE"
   if [ ${#req[@]} -eq 0 ]; then
-    from=file
+    # Con run-id solo cuentan los requisitos de ESA sesión (nunca se heredan los del worktree ni los de otra).
+    local rf; rf=$(qg_required_file "$filter")
+    if [ -n "$filter" ]; then from="session:$filter"; else from=file; fi
     local r=1
-    if [ -d "$QG_STATE" ]; then qg_required_read; r=$?; fi
-    [ $r = 2 ] && qg_die "$EX_STATE" "archivo de requeridos corrupto: $QG_STATE/required (repáralo con: qg require --clear)"
+    if [ -d "$QG_STATE" ]; then qg_required_read "$rf"; r=$?; fi
+    [ $r = 2 ] && qg_die "$EX_STATE" "archivo de requeridos corrupto: $rf (repáralo con: qg require --clear)"
     [ $r = 0 ] && [ ${#QG_REQUIRED[@]} -gt 0 ] && req=("${QG_REQUIRED[@]}")
   fi
 
@@ -634,6 +681,48 @@ qg_cmd_status() {
   case $overall in
     valid) return 0 ;; failed) return 1 ;; blocked) return 2 ;; incomplete) return 3 ;;
     stale) return 4 ;; *) return 5 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- qg reject
+
+# Registra que la última evidencia de un check sobre la huella actual NO es aceptable (p. ej. exit 0
+# sin pruebas ejecutadas). Solo puede degradar: el check pasa a blocked hasta una nueva ejecución.
+qg_cmd_reject() {
+  local run_id="${QG_RUN_ID:-unspecified}" reason="" id=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --run-id) [ $# -ge 2 ] || qg_usage "--run-id requiere un valor"; run_id=$2; shift 2 ;;
+      --reason) [ $# -ge 2 ] || qg_usage "--reason requiere un código"; reason=$2; shift 2 ;;
+      -*) qg_usage "opción desconocida: $1" ;;
+      *) [ -z "$id" ] || qg_usage "solo un check-id"; id=$1; shift ;;
+    esac
+  done
+  [ -n "$id" ] || qg_usage "uso: qg reject [--run-id ID] <check-id> --reason <código>"
+  [[ $id =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$id'"
+  [[ $reason =~ $QG_REASON_RE ]] || qg_usage "--reason obligatorio: [a-z0-9_-], p. ej. no_tests_executed"
+  [[ $run_id =~ $QG_RUNID_RE ]] || qg_usage "run-id inválido '$run_id'"
+  qg_git_init
+  qg_state_init
+  local dir; dir=$(qg_check_dir "$id")
+  [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || [ -d "$dir" ] || qg_die "$EX_STATE" "no se pudo crear '$dir'"
+  qg_fp_compute || exit "$EX_STATE"
+  qg_record_reset
+  R_schema=$QG_SCHEMA; R_qg_version=$QG_VERSION; R_check_id=$id; R_run_id=$run_id; R_status=rejected
+  R_error=$reason; R_fp_start=$QG_FP; R_fp_end=$QG_FP; R_changed_during_run=0
+  R_index_start=$(qg_index_state); R_head_start=$QG_HEAD
+  R_started_epoch=$(qg_now_epoch); R_started_at=$(qg_now_iso); R_finished_epoch=$R_started_epoch
+  R_finished_at=$R_started_at; R_duration_s=0; R_pid=$$; R_host=$(qg_host); R_cwd=$PWD; R_argc=0
+  qg_record_create "$dir" >/dev/null || exit "$EX_STATE"
+  qg_err "check=$id evidencia descartada (motivo=$reason) para la huella actual"
+}
+
+qg_cmd_version() {
+  case ${1:-} in
+    --json) printf '{"name":"qg","version":%s,"schema":%s,"interface":%s}\n' \
+              "$(qg_json_str "$QG_VERSION")" "$QG_SCHEMA" "$QG_INTERFACE" ;;
+    "") printf 'qg %s (schema %s, interface %s)\n' "$QG_VERSION" "$QG_SCHEMA" "$QG_INTERFACE" ;;
+    *) qg_usage "uso: qg version [--json]" ;;
   esac
 }
 
@@ -692,8 +781,19 @@ EOF
 $(qg_record_list "$d")
 EOF
   done
+  # sesiones sin actividad desde hace más de QG_SESSION_DAYS días (30 por defecto)
+  local s_n=0
+  if [ -d "$QG_STATE/sessions" ] && [ ! -L "$QG_STATE/sessions" ]; then
+    for d in "$QG_STATE/sessions"/*; do
+      [ -d "$d" ] && [ ! -L "$d" ] || continue
+      # -mtime es portable (GNU/BSD): ningún archivo de la sesión modificado en los últimos N días
+      if [ -z "$(find "$d" -mtime -"${QG_SESSION_DAYS:-30}" 2>/dev/null | head -n 1)" ]; then
+        rm -rf "$d" && s_n=$((s_n + 1))
+      fi
+    done
+  fi
   qg_unlock
-  qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n"
+  qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n sesiones=$s_n"
 }
 
 # ---------------------------------------------------------------- principal
@@ -721,7 +821,8 @@ qg_main() {
     show)           qg_cmd_show "$@" ;;
     gc)             qg_cmd_gc "$@" ;;
     help|-h|--help) qg_help ;;
-    version|--version) printf 'qg %s (schema %s)\n' "$QG_VERSION" "$QG_SCHEMA" ;;
+    reject)         qg_cmd_reject "$@" ;;
+    version|--version) qg_cmd_version "$@" ;;
     *) qg_usage "subcomando desconocido: $sub" ;;
   esac
 }
