@@ -183,7 +183,9 @@ if [ $IS_GIT = 1 ]; then
   if [ -n "$ALLOW" ]; then
     OUTS=""
     for f in $CHANGED; do
-      okf=0; for g in $ALLOW; do case $f in $g) okf=1 ;; esac; done   # $g: glob del caso (p. ej. src/*)
+      okf=0
+      # shellcheck disable=SC2254  # $g es un glob del caso (p. ej. src/*): la coincidencia por patrón es intencionada
+      for g in $ALLOW; do case $f in $g) okf=1 ;; esac; done
       [ $okf = 1 ] || OUTS="$OUTS $f"
     done
     if [ -z "$OUTS" ]; then check scope pass "cambios dentro de: $ALLOW"; else check scope fail "fuera de alcance:$OUTS"; fi
@@ -194,7 +196,9 @@ if [ $IS_GIT = 1 ]; then
     tests_rx='(^|[^A-Za-z_])(test|it|describe)[[:space:]]*\(|def test_|assert'
     skip_rx='\.skip[[:space:]]*\(|(^|[^A-Za-z_])xit[[:space:]]*\(|\.only[[:space:]]*\(|@unittest\.skip|pytest\.mark\.(skip|xfail)|skipIf|skipUnless'
     for f in $(git -C "$WS" ls-tree -r --name-only "$BASE"); do
-      okf=0; for g in $PROT; do case $f in $g) okf=1 ;; esac; done    # $g: glob del caso (p. ej. test/*)
+      okf=0
+      # shellcheck disable=SC2254  # $g es un glob del caso (p. ej. test/*): la coincidencia por patrón es intencionada
+      for g in $PROT; do case $f in $g) okf=1 ;; esac; done
       [ $okf = 1 ] || continue
       if [ ! -f "$WS/$f" ]; then WEAK="$WEAK $f(eliminado)"; continue; fi
       b=$(git -C "$WS" show "$BASE:$f" | LC_ALL=C grep -cE "$tests_rx"); a=$(LC_ALL=C grep -cE "$tests_rx" "$WS/$f")
