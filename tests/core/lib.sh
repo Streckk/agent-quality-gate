@@ -28,6 +28,7 @@ qg() { "${QG_BASH:-bash}" "$QG_BIN" "$@"; }
 new_repo() {
   local d
   d=$(mktemp -d "$TESTS_TMP/repo.XXXXXX")
+  d=$(cd "$d" && pwd)   # normaliza la ruta lógica (en macOS TMPDIR termina en "/" y produce "//")
   git -C "$d" init -q -b main >/dev/null 2>&1 || { git -C "$d" init -q && git -C "$d" checkout -q -b main; }
   printf '%s' "$d"
 }
