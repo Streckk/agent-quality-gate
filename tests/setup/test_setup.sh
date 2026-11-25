@@ -209,6 +209,7 @@ P=$(newp); st "$P" setup; st "$P" setup --remove
 after=$(find "$TESTS_TMP" -newer "$REF" -type f | grep -v '/p\.' | grep -v 'con espacios' | grep -vF "$HOME/.claude" | grep -v 'fuera' | sort | cksum)
 assert_eq "$after" "$before" "23. no escribe fuera del proyecto"
 no_tmp_left "$P" "23"
-assert_eq "$(grep -cE '(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)' "$S")" 0 "24. el script no usa eval"
+# Fuera de comentarios (como validate.sh) y en ASCII: "evalúa" no es una llamada a eval (GNU grep trata "ú" como no palabra).
+assert_eq "$(grep -vE '^[[:space:]]*#' "$S" | LC_ALL=C grep -cE '(^|[^A-Za-z0-9_])eval([[:space:];|&)]|$)')" 0 "24. el script no usa eval"
 
 finish
