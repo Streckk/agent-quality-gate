@@ -3,18 +3,20 @@
 # CONSUME CUOTA. Nunca se ejecuta en CI. Los casos con la etiqueta `opt-in` (p. ej. Codex) solo
 # corren si se piden explícitamente con --tag.
 #
-# uso: evals/run.sh [--case <id>]… [--tag <tag>] [--runs N] [--max-cost-usd X] [--out DIR] [--dry-run]
+# uso: evals/run.sh [--case <id>]… [--tag <tag>] [--runs N] [--model M] [--max-cost-usd X] [--out DIR] [--dry-run]
+# --model fija el modelo de todas las ejecuciones (recomendado para comparar); se registra en run.kv.
 # Cada ejecución: fixture limpio en un directorio temporal, `claude -p --plugin-dir <repo>
 # --session-id <uuid>` (sin instalar el plugin ni tocar settings) y evaluate.sh sobre la evidencia.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd -P); REPO=$(cd "$HERE/.." && pwd -P)
 . "$HERE/lib/fixtures.sh"
-CASES=(); TAG=""; RUNS=1; MAXCOST=""; OUT=""; DRY=0
+CASES=(); TAG=""; RUNS=1; MAXCOST=""; OUT=""; DRY=0; MODEL=""
 while [ $# -gt 0 ]; do
   case $1 in
     --case) CASES+=("$2"); shift 2 ;;
     --tag) TAG=$2; shift 2 ;;
     --runs) RUNS=$2; shift 2 ;;
+    --model) MODEL=$2; shift 2 ;;
     --max-cost-usd) MAXCOST=$2; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
     --dry-run) DRY=1; shift ;;
@@ -55,6 +57,8 @@ commit=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null); dirty=$( [ -n "$(gi
   echo "runs_per_case=$RUNS"
   echo "cases=$(for d in "${sel[@]}"; do printf '%s ' "$(conf "$d" id)"; done)"
   echo "arm=with-plugin (--plugin-dir)"
+  echo "model=${MODEL:-default}"
+  echo "max_cost_usd=${MAXCOST:-none}"
 } > "$OUT/run.kv"
 echo "casos: $(sed -n 's/^cases=//p' "$OUT/run.kv")· ejecuciones por caso: $RUNS · salida: $OUT"
 [ $DRY = 1 ] && { echo "(dry-run: no se lanza Claude)"; exit 0; }
@@ -72,16 +76,18 @@ for d in "${sel[@]}"; do
     if [ "$(conf "$d" path_mode full)" = nocodex ]; then
       PATHX=$(printf '%s' "$PATH" | tr ':' '\n' | while read -r p; do [ -x "$p/codex" ] || printf '%s:' "$p"; done); PATHX=${PATHX%:}
     fi
-    ( cd "$WS" && env PATH="$PATHX" $envs claude -p "$(cat "$d/task.md")" --plugin-dir "$REPO" --session-id "$SID" \
+    ( cd "$WS" && env PATH="$PATHX" $envs claude -p "$(cat "$d/task.md")" --plugin-dir "$REPO" --session-id "$SID" ${MODEL:+--model "$MODEL"} \
         --output-format stream-json --verbose --max-turns "$(conf "$d" max_turns 60)" \
         --permission-mode acceptEdits --allowedTools "Bash Read Edit Write Glob Grep Skill" \
         > "$R/trace.jsonl" 2> "$R/claude.stderr" )
     rc=$?
     printf 'case=%s\nrun=%s\nsession_id=%s\nclaude_rc=%s\nwall_s=%s\n' "$id" "$n" "$SID" "$rc" "$(( $(date +%s) - start ))" > "$R/meta.kv"
     bash "$HERE/evaluate.sh" "$d/case.conf" "$WS" "$R/trace.jsonl" "$R/eval"
+    # Si el evaluador ni siquiera dejó resultado, se registra como error del evaluador (no del agente).
+    [ -s "$R/eval/result.kv" ] || { mkdir -p "$R/eval"; printf 'case_id=%s\nrun_uid=%s\nrun_status=evaluator_error\noutcome=evaluator_error\nevaluator_reason=evaluate.sh no produjo resultado\ncase_pass=na\n' "$id" "$SID" > "$R/eval/result.kv"; }
     c=$(sed -n 's/^cost_usd=//p' "$R/eval/result.kv"); [ -n "$c" ] && spent=$(awk -v s="$spent" -v c="$c" 'BEGIN{printf "%.4f", s+c}')
-    printf '%-22s run %s  pass=%s  verdict=%s  qg=%s  fallidos=[%s]  coste=%s\n' "$id" "$n" \
-      "$(sed -n 's/^case_pass=//p' "$R/eval/result.kv")" "$(sed -n 's/^verdict=//p' "$R/eval/result.kv")" \
+    printf '%-22s run %s  outcome=%s  verdict=%s  qg=%s  fallidos=[%s]  coste=%s\n' "$id" "$n" \
+      "$(sed -n 's/^outcome=//p' "$R/eval/result.kv")" "$(sed -n 's/^verdict=//p' "$R/eval/result.kv")" \
       "$(sed -n 's/^qg_status=//p' "$R/eval/result.kv")" "$(sed -n 's/^checks_failed=//p' "$R/eval/result.kv")" "${c:-?}"
   done
 done

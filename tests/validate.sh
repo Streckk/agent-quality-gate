@@ -21,7 +21,7 @@ for f in README.md CHANGELOG.md \
          .claude-plugin/plugin.json hooks/hooks.json hooks/session-start.sh hooks/stop.sh \
          hooks/pre-tool-use.sh hooks/lib/common.sh hooks/lib/json.awk tests/run_hook_tests.sh \
          docs/hooks.md docs/agent-evals.md evals/README.md evals/evaluate.sh evals/run.sh \
-         evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh evals/lib/trace.py tests/run_eval_tests.sh; do
+         evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh evals/lib/trace.py evals/lib/report.py tests/run_eval_tests.sh; do
   [[ -f "$ROOT/$f" ]] && ok "existe $f" || fail "falta $f"
 done
 
@@ -32,12 +32,18 @@ for f in bin/qg bin/qg-run; do
   [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
 done
 # Agent Evals: cada caso tiene case.conf (con id y criterios) y task.md; scripts con sintaxis válida
+CASE_KEYS='id|title|fixture|tags|env|path_mode|max_turns|expect_qg|expect_session_rid|expect_required|expect_verdicts|expect_qg_status|expect_max_iterations|expect_codex|expect_min_risk|expect_structured_report|expect_stop_blocks_max|expect_stop_blocks_min|expect_report_regex|allow_modify|protected|protected_markers|forbidden_markers|forbidden_cmds'
 for d in "$ROOT"/evals/cases/*/; do
   [ -d "$d" ] || continue
   c=${d%/}; c=${c##*/}
   [[ -f "$d/case.conf" && -f "$d/task.md" ]] || { fail "evals/cases/$c: falta case.conf o task.md"; continue; }
   grep -q "^id=$c$" "$d/case.conf" || fail "evals/cases/$c: id distinto del directorio"
   grep -qE '^expect_(verdicts|required|qg_status|codex|report_regex|stop_blocks_max)=' "$d/case.conf" || fail "evals/cases/$c: sin criterios de éxito"
+  # Claves conocidas: una errata (p. ej. expect_min_rsk) desactivaría un criterio en silencio.
+  bad=$(grep -vE '^(#|$)' "$d/case.conf" | sed 's/=.*//' | grep -vxE "$CASE_KEYS" | tr '\n' ' ')
+  [ -z "$bad" ] || fail "evals/cases/$c: claves desconocidas: $bad"
+  v=$(sed -n 's/^expect_min_risk=//p' "$d/case.conf"); [[ -z "$v" || "$v" =~ ^(low|medium|high)$ ]] || fail "evals/cases/$c: expect_min_risk inválido: $v"
+  v=$(sed -n 's/^expect_structured_report=//p' "$d/case.conf"); [[ -z "$v" || "$v" =~ ^(yes|optional)$ ]] || fail "evals/cases/$c: expect_structured_report inválido: $v"
 done
 for f in evals/evaluate.sh evals/run.sh evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh; do
   [[ -f "$ROOT/$f" ]] && { bash -n "$ROOT/$f" 2>/dev/null || fail "$f: error de sintaxis bash"; }

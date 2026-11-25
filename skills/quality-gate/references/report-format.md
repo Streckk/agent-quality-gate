@@ -35,7 +35,46 @@ El reporte es la salida verificable de la puerta. Debe poder auditarse: cada `pa
 
 ### Pendiente de aprobación humana
 - <acciones sensibles o decisiones abiertas>
+
+<bloque estructurado: ver abajo; siempre al final>
 ```
+
+## Bloque estructurado (obligatorio, al final del reporte)
+
+El Markdown es para la persona. Las herramientas leen además un bloque JSON pequeño, en un fence ` ```json `, como **último elemento** del reporte. Repite lo que ya dice el Markdown; no añade información nueva ni sustituye a `qg`.
+
+```json
+{
+  "kind": "quality-gate-report",
+  "schema": 1,
+  "verdict": "PASS WITH LIMITATIONS",
+  "risk": "medium",
+  "evidence": { "provider": "qg", "run_id": "cc-<session_id>", "status": "valid", "fingerprint": "sha1:<huella>" },
+  "review": { "status": "skipped", "reason": "unavailable: codex ready:false" }
+}
+```
+
+| Campo | Obligatorio | Valores |
+|---|---|---|
+| `kind` | sí | `"quality-gate-report"` |
+| `schema` | sí | entero `1` |
+| `verdict` | sí | `PASS`, `PASS WITH LIMITATIONS`, `FAIL`, `BLOCKED`, `NOT VERIFIED` (el mismo del encabezado) |
+| `risk` | sí | `low`, `medium`, `high` (el mismo de la línea **Riesgo**) |
+| `evidence.provider` | sí | `qg` o `none` |
+| `evidence.run_id` | si `provider=qg` | el run-id de **esta** sesión (`qg session id`) |
+| `evidence.status` | si `provider=qg` | el `result` de `qg status --run-id <ID> --json`, sin reinterpretar |
+| `evidence.fingerprint` | no | `fingerprint` del mismo `qg status` |
+| `evidence.reason` | si `provider=none` | motivo corto: `no-git`, `qg-unavailable`, `discover-only`… |
+| `review.status` | sí | `done`, `skipped`, `not_required` |
+| `review.kind` | si `done` | `review` o `adversarial` |
+| `review.reason` | si `skipped` | motivo corto (`unavailable: …`, `by user`, …) |
+
+Reglas:
+- Textos de una línea y de menos de 200 caracteres. **Nunca** secretos, tokens, rutas privadas ni salidas de comandos.
+- Sin `qg`: `"evidence": {"provider": "none", "reason": "<motivo>"}`; no inventes `run_id` ni `status`.
+- Copia `status` y `fingerprint` del `qg status` que acabas de consultar. Si la huella cambió después, vuelve a consultarlo.
+- El bloque no es una prueba: quien evalúa lo contrasta con `qg status`, los registros y la traza. Un bloque que contradiga al Markdown o a `qg` es un defecto del reporte.
+- Si una versión futura cambia el formato, se incrementará `schema`. Los lectores deben rechazar los esquemas que no conozcan.
 
 ## Veredictos
 
@@ -66,7 +105,7 @@ Un `passed` solo vale para el código exacto sobre el que se ejecutó.
 2. Justo antes de emitir el reporte, recalcúlalo. Si difiere (porque tú, otro agente o el usuario editó algo después), reejecuta las verificaciones afectadas o marca la huella como **OBSOLETA** y aplica la precedencia (`BLOCKED`).
 3. Las ediciones hechas para corregir hallazgos de la revisión también invalidan la evidencia anterior.
 
-Limitación: un reporte ya emitido no se invalida solo si el código cambia después. Es texto; detectar eso automáticamente requiere hooks (propuesto para v0.2.0).
+Limitación: un reporte ya emitido es texto y no se invalida solo si el código cambia después. Los hooks opcionales del plugin (desactivados por defecto; ver `docs/hooks.md`) detectan cambios sin evidencia vigente al terminar la sesión y antes de `git push`, pero no reescriben reportes ya entregados.
 
 ## Reglas
 

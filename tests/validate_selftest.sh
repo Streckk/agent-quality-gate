@@ -83,4 +83,10 @@ expect_fail "hook sin bit de ejecución"
 copy_repo; printf '\nx="$b→$a"\n' >> "$tmp/r/evals/aggregate.sh"
 expect_fail "variable sin llaves seguida de carácter no ASCII"
 
+copy_repo; echo "expect_min_rsk=high" >> "$tmp/r/evals/cases/e2-feedback-loop/case.conf"
+expect_fail "clave desconocida (errata) en un case.conf de evals"
+
+copy_repo; echo "expect_min_risk=critical" >> "$tmp/r/evals/cases/e2-feedback-loop/case.conf"
+expect_fail "expect_min_risk con un valor inválido"
+
 (( failures == 0 )) && echo "OK: selftest completo" || { echo "FALLÓ: $failures caso(s)" >&2; exit 1; }
