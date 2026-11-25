@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# qg-setup — administra el bloque de instrucciones de agent-quality-gate en CLAUDE.md.
+#
+#   qg-setup [setup] [--scope project|user] [--status | --remove] [--dry-run]
+#            [--file CLAUDE.md|.claude/CLAUDE.md] [--project-dir DIR] [--import-agents] [--force]
+#
+# Lo invoca la skill (/quality-gate setup …) y también se puede usar directamente.
+# Solo toca el bloque delimitado por los marcadores; el resto del archivo se conserva byte a byte.
+# Nunca ejecuta ni evalúa el contenido de CLAUDE.md. Escribe con archivo temporal + mv en el mismo
+# directorio, conservando permisos. No instala el plugin ni activa hooks.
+#
+# Códigos de salida: 0 hecho o sin cambios · 64 uso · 65 conflicto (bloque malformado o duplicado,
+# ubicación ambigua, instrucciones similares) · 66 inseguro (symlink fuera del alcance, permisos) ·
+# 73 fallo de escritura.
+set -u
+
+BLOCK_VERSION=1
+START_PREFIX='<!-- agent-quality-gate:start'
+START_MARK="<!-- agent-quality-gate:start v$BLOCK_VERSION -->"
+END_MARK='<!-- agent-quality-gate:end -->'
+
+die() { printf 'qg-setup: %s\n' "$2" >&2; exit "$1"; }
+usage() {
+  cat <<'EOF'
+uso: qg-setup [setup] [--scope project|user] [--status | --remove] [--dry-run]
+              [--file CLAUDE.md|.claude/CLAUDE.md] [--project-dir DIR] [--import-agents] [--force]
+
+  (sin acción)      instala o actualiza el bloque administrado (idempotente)
+  --status          muestra el estado sin modificar nada
+  --remove          elimina solo el bloque administrado
+  --dry-run         muestra el cambio propuesto (diff) sin escribir
+  --scope project   CLAUDE.md del proyecto actual (por defecto; raíz de Git o directorio actual)
+  --scope user      ~/.claude/CLAUDE.md (solo si lo pides explícitamente)
+  --file F          elige CLAUDE.md o .claude/CLAUDE.md cuando ambos existen
+  --import-agents   si el proyecto solo tiene AGENTS.md, crea CLAUDE.md con "@AGENTS.md" + el bloque
+  --force           añade el bloque aunque el archivo ya mencione /quality-gate fuera del bloque
+EOF
+}
+
+# Texto del bloque (fuente única). Los comentarios HTML no llegan al modelo: Claude Code los elimina.
+block_lines() {
+  cat <<EOF
+$START_MARK
+<!-- Bloque administrado por "/quality-gate setup": se reemplaza al actualizar. Para quitarlo: /quality-gate setup --remove -->
+## Control de calidad (agent-quality-gate)
+
+- Si la tarea modifica código, pruebas, dependencias, configuración de build o CI, usa la skill \`/quality-gate\` antes de darla por terminada. Si la skill no está disponible, dilo y verifica con los comandos reales del proyecto.
+- No afirmes que algo funciona, pasa o está listo sin haber ejecutado las verificaciones reales sobre el estado actual del código. Si cambias algo después de verificar, la evidencia anterior deja de valer.
+- Si una verificación falla, corrige dentro del alcance de la tarea sin debilitar, omitir ni borrar pruebas. Si no se resuelve, repórtalo como fallo.
+- En tareas de solo lectura o cambios solo de documentación no hace falta la puerta completa: indica qué no se verificó.
+- Despliegues, migraciones, borrados de datos, secretos, push y publicaciones requieren aprobación explícita.
+$END_MARK
+EOF
+}
+# block_out <eol>: el bloque con el fin de línea del archivo (LF o CRLF)
+block_out() { if [ "$1" = crlf ]; then block_lines | awk '{ printf "%s\r\n", $0 }'; else block_lines; fi; }
+
+# ---------- argumentos
+SCOPE=project; ACTION=install; DRY=0; FILE_OPT=""; PROJ_DIR=""; IMPORT_AGENTS=0; FORCE=0
+[ "${1:-}" = setup ] && shift
+while [ $# -gt 0 ]; do
+  case $1 in
+    --scope) [ $# -ge 2 ] || die 64 "--scope necesita un valor (project|user)"; SCOPE=$2; shift 2 ;;
+    --scope=*) SCOPE=${1#--scope=}; shift ;;
+    --status) [ "$ACTION" = install ] || die 64 "--status y --remove son incompatibles"; ACTION=status; shift ;;
+    --remove) [ "$ACTION" = install ] || die 64 "--status y --remove son incompatibles"; ACTION=remove; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --file) [ $# -ge 2 ] || die 64 "--file necesita un valor"; FILE_OPT=$2; shift 2 ;;
+    --file=*) FILE_OPT=${1#--file=}; shift ;;
+    --project-dir) [ $# -ge 2 ] || die 64 "--project-dir necesita un valor"; PROJ_DIR=$2; shift 2 ;;
+    --import-agents) IMPORT_AGENTS=1; shift ;;
+    --force) FORCE=1; shift ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) usage >&2; die 64 "argumento desconocido: $1" ;;
+  esac
+done
+case $SCOPE in project|user) ;; *) die 64 "--scope debe ser project o user (recibido: $SCOPE)" ;; esac
+[ -z "$FILE_OPT" ] || [ "$SCOPE" = project ] || die 64 "--file solo aplica a --scope project"
+case $FILE_OPT in ''|CLAUDE.md|.claude/CLAUDE.md|./CLAUDE.md|./.claude/CLAUDE.md) ;; *) die 64 "--file solo admite CLAUDE.md o .claude/CLAUDE.md" ;; esac
+FILE_OPT=${FILE_OPT#./}
+
+# ---------- rutas
+# phys_dir <dir>: ruta física de un directorio existente
+phys_dir() { (cd -P "$1" 2>/dev/null && pwd); }
+# resolve <ruta>: sigue symlinks (sin readlink -f, que no existe en macOS) y devuelve la ruta física.
+resolve() {
+  local p=$1 n=0 l d
+  while [ -L "$p" ]; do
+    n=$((n + 1)); [ $n -le 40 ] || return 1
+    l=$(readlink "$p") || return 1
+    case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac
+  done
+  d=$(phys_dir "$(dirname "$p")") || return 1
+  printf '%s/%s' "$d" "$(basename "$p")"
+}
+
+if [ "$SCOPE" = user ]; then
+  [ -n "${HOME:-}" ] || die 64 "HOME no está definido"
+  ROOT="$HOME/.claude"
+  SCOPE_LABEL="usuario (~/.claude/CLAUDE.md)"
+else
+  if [ -n "$PROJ_DIR" ]; then
+    [ -d "$PROJ_DIR" ] || die 64 "no existe el directorio $PROJ_DIR"
+    ROOT=$(phys_dir "$PROJ_DIR")
+  else
+    ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=$(pwd -P)
+    ROOT=$(phys_dir "$ROOT")
+  fi
+  SCOPE_LABEL="proyecto ($ROOT)"
+fi
+
+# ---------- análisis de un archivo
+# scan <archivo> → "inicios finales línea_inicio línea_fin versión menciones_fuera primera_mención"
+scan() {
+  awk -v sp="$START_PREFIX" -v em="$END_MARK" '
+    { l = $0; sub(/\r$/, "", l) }
+    index(l, sp) == 1 { sc++; if (!sl) { sl = NR; sv = l }; inb = 1; next }
+    l == em { ec++; if (!el) el = NR; inb = 0; next }
+    !inb && (index(l, "agent-quality-gate") || index(l, "/quality-gate")) { sim++; if (!fl) fl = NR }
+    END {
+      v = sv; sub(/^<!-- agent-quality-gate:start v?/, "", v); sub(/ *-->.*$/, "", v); if (v == "") v = "?"
+      printf "%d %d %d %d %s %d %d\n", sc, ec, sl, el, v, sim, fl
+    }' "$1"
+}
+eol_of() { if [ -s "$1" ] && head -n 1 "$1" | LC_ALL=C grep -q "$(printf '\r')\$"; then echo crlf; else echo lf; fi; }
+# block_state <archivo> → absent | current | outdated | malformed  (usa las variables de scan)
+analyze() {
+  local f=$1
+  SC=0; EC=0; SL=0; EL=0; SV=""; SIM=0; FL=0; STATE=absent
+  [ -f "$f" ] || return 0
+  read -r SC EC SL EL SV SIM FL <<EOF
+$(scan "$f")
+EOF
+  if [ "$SC" -eq 0 ] && [ "$EC" -eq 0 ]; then STATE=absent
+  elif [ "$SC" -eq 1 ] && [ "$EC" -eq 1 ] && [ "$SL" -lt "$EL" ]; then
+    if sed -n "${SL},${EL}p" "$f" | LC_ALL=C tr -d '\r' | cmp -s - <(block_lines); then STATE=current; else STATE=outdated; fi
+  else STATE=malformed; fi
+}
+has_markers() { [ -f "$1" ] && LC_ALL=C grep -qF -e "$START_PREFIX" -e "$END_MARK" "$1"; }
+
+# ---------- elegir el archivo
+NOTE=""
+if [ "$SCOPE" = user ]; then
+  TARGET="$ROOT/CLAUDE.md"
+else
+  A="$ROOT/CLAUDE.md"; B="$ROOT/.claude/CLAUDE.md"
+  ea=0; eb=0; { [ -e "$A" ] || [ -L "$A" ]; } && ea=1; { [ -e "$B" ] || [ -L "$B" ]; } && eb=1
+  if [ -n "$FILE_OPT" ]; then TARGET="$ROOT/$FILE_OPT"
+  elif [ $ea = 1 ] && [ $eb = 1 ]; then
+    ma=0; mb=0; has_markers "$A" && ma=1; has_markers "$B" && mb=1
+    if [ $ma = 1 ] && [ $mb = 1 ]; then
+      die 65 "hay bloques de agent-quality-gate en CLAUDE.md y en .claude/CLAUDE.md. Claude Code carga ambos: quita uno con --remove --file <archivo>"
+    elif [ $ma = 1 ]; then TARGET=$A
+    elif [ $mb = 1 ]; then TARGET=$B
+    elif [ "$ACTION" = install ]; then
+      die 65 "existen CLAUDE.md y .claude/CLAUDE.md (Claude Code carga los dos). Elige dónde añadir el bloque: --file CLAUDE.md o --file .claude/CLAUDE.md"
+    else TARGET=$A; NOTE="también existe .claude/CLAUDE.md (sin bloque)"; fi
+  elif [ $eb = 1 ]; then TARGET=$B
+  else
+    TARGET=$A
+    if [ $ea = 0 ] && [ -f "$ROOT/AGENTS.md" ] && [ ! -e "$ROOT/CLAUDE.local.md" ]; then
+      NOTE="el proyecto tiene AGENTS.md y no CLAUDE.md: Claude Code solo lee AGENTS.md cuando no hay CLAUDE.md"
+      if [ "$ACTION" = install ] && [ $IMPORT_AGENTS = 0 ]; then
+        die 65 "$NOTE. Crear CLAUDE.md dejaría de cargar AGENTS.md. Opciones: --import-agents (crea CLAUDE.md con \"@AGENTS.md\" y el bloque, sin tocar AGENTS.md), --scope user, o añadir tú mismo \"@AGENTS.md\" a un CLAUDE.md"
+      fi
+    fi
+  fi
+fi
+
+# ---------- seguridad: symlinks y permisos
+SCOPE_PHYS=""; [ -d "$ROOT" ] && SCOPE_PHYS=$(phys_dir "$ROOT")
+if [ -L "$TARGET" ]; then
+  REAL=$(resolve "$TARGET") || die 66 "$TARGET es un enlace simbólico que no se puede resolver"
+  case $REAL in "$SCOPE_PHYS"/*) TARGET=$REAL ;;
+    *) die 66 "$TARGET es un enlace simbólico a $REAL, fuera de $ROOT. No se modifica: edita el destino a mano o reemplaza el enlace" ;; esac
+elif [ -d "$(dirname "$TARGET")" ]; then
+  REALD=$(phys_dir "$(dirname "$TARGET")")
+  case "$REALD/" in "$SCOPE_PHYS"/*) ;; *) die 66 "$(dirname "$TARGET") apunta fuera de $ROOT; no se modifica" ;; esac
+fi
+[ -e "$TARGET" ] && [ ! -f "$TARGET" ] && die 66 "$TARGET existe pero no es un archivo regular"
+
+analyze "$TARGET"
+EXISTS=0; [ -f "$TARGET" ] && EXISTS=1
+
+# ---------- --status
+if [ "$ACTION" = status ]; then
+  printf 'alcance: %s\n' "$SCOPE_LABEL"
+  printf 'archivo: %s\n' "$TARGET"
+  printf 'existe: %s\n' "$( [ $EXISTS = 1 ] && echo sí || echo no)"
+  case $STATE in
+    current) printf 'bloque: instalado y actualizado (v%s)\n' "$SV" ;;
+    outdated) printf 'bloque: instalado, versión anterior o modificado (v%s; actual v%s): /quality-gate setup lo actualiza\n' "$SV" "$BLOCK_VERSION" ;;
+    malformed) printf 'bloque: MALFORMADO (marcadores de inicio: %s, de fin: %s): revísalo a mano\n' "$SC" "$EC" ;;
+    absent) printf 'bloque: no instalado\n' ;;
+  esac
+  if [ "$SIM" -gt 0 ]; then printf 'menciones a quality-gate fuera del bloque: sí (%s; primera en la línea %s)\n' "$SIM" "$FL"
+  else printf 'menciones a quality-gate fuera del bloque: no\n'; fi
+  [ -z "$NOTE" ] || printf 'nota: %s\n' "$NOTE"
+  exit 0
+fi
+
+# ---------- construir el contenido nuevo
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/qg-setup.XXXXXX") || die 73 "no se pudo crear un directorio temporal"
+trap 'rm -rf "$TMPD"' EXIT
+NEW="$TMPD/nuevo"
+EOL=lf; [ $EXISTS = 1 ] && EOL=$(eol_of "$TARGET")
+nl() { if [ "$EOL" = crlf ]; then printf '\r\n'; else printf '\n'; fi; }
+DELETE=0
+
+case $ACTION in
+  install)
+    case $STATE in
+      malformed) die 65 "bloque malformado en $TARGET (marcadores de inicio: $SC, de fin: $EC). No se sobrescribe contenido ambiguo: deja un solo par de marcadores o bórralos y vuelve a ejecutar" ;;
+      current) printf 'agent-quality-gate ya está configurado en %s (bloque actualizado, v%s). Sin cambios.\n' "$TARGET" "$SV"; exit 0 ;;
+      outdated)
+        { [ "$SL" -gt 1 ] && head -n $((SL - 1)) "$TARGET"; block_out "$EOL"; tail -n +$((EL + 1)) "$TARGET"; } > "$NEW" ;;
+      absent)
+        if [ "$SIM" -gt 0 ] && [ $FORCE = 0 ]; then
+          die 65 "$TARGET ya menciona /quality-gate o agent-quality-gate fuera de un bloque administrado (línea $FL). Revísalo para no duplicar instrucciones; usa --force para añadir el bloque igualmente"
+        fi
+        if [ $EXISTS = 0 ]; then
+          { [ $IMPORT_AGENTS = 1 ] && [ -f "$ROOT/AGENTS.md" ] && printf '@AGENTS.md\n\n'; block_out lf; } > "$NEW"
+        elif [ ! -s "$TARGET" ]; then block_out "$EOL" > "$NEW"
+        else
+          {
+            cat "$TARGET"
+            [ "$(tail -c 1 "$TARGET" | wc -l | tr -d ' ')" = 0 ] && nl          # sin salto final
+            [ -n "$(tail -n 1 "$TARGET" | LC_ALL=C tr -d '\r\n')" ] && nl       # línea en blanco de separación
+            block_out "$EOL"
+          } > "$NEW"
+        fi ;;
+    esac ;;
+  remove)
+    case $STATE in
+      absent) if [ $EXISTS = 1 ]; then printf 'No hay bloque de agent-quality-gate en %s. Sin cambios.\n' "$TARGET"; else printf 'No existe %s. Sin cambios.\n' "$TARGET"; fi; exit 0 ;;
+      malformed) die 65 "bloque malformado en $TARGET (marcadores de inicio: $SC, de fin: $EC). No se elimina nada automáticamente: revísalo a mano" ;;
+    esac
+    total=$(awk 'END { print NR }' "$TARGET")
+    keep=$((SL - 1))
+    # Si el bloque estaba al final, se quita también la línea en blanco que lo separaba.
+    if [ "$EL" -ge "$total" ] && [ "$keep" -ge 1 ] && [ -z "$(sed -n "${keep}p" "$TARGET" | LC_ALL=C tr -d '\r')" ]; then keep=$((keep - 1)); fi
+    { [ "$keep" -ge 1 ] && head -n "$keep" "$TARGET"; tail -n +$((EL + 1)) "$TARGET"; } > "$NEW"
+    [ -z "$(LC_ALL=C tr -d ' \t\r\n' < "$NEW")" ] && DELETE=1 ;;
+esac
+
+# ---------- vista previa
+if [ $DRY = 1 ]; then
+  printf '[dry-run] %s · %s\n' "$SCOPE_LABEL" "$TARGET"
+  if [ $DELETE = 1 ]; then printf '[dry-run] el archivo solo contiene el bloque: se eliminaría el archivo\n'
+  elif [ $EXISTS = 1 ]; then diff -u "$TARGET" "$NEW" | sed -e "1s|.*|--- $TARGET (actual)|" -e "2s|.*|+++ $TARGET (propuesto)|"
+  else printf '[dry-run] se crearía el archivo con este contenido:\n'; cat "$NEW"; fi
+  printf '[dry-run] no se ha escrito nada\n'
+  exit 0
+fi
+
+# ---------- escritura segura
+DIR=$(dirname "$TARGET")
+if [ ! -d "$DIR" ]; then
+  [ "$SCOPE" = user ] || [ "$DIR" = "$ROOT/.claude" ] || die 66 "no existe $DIR"
+  mkdir -p "$DIR" 2>/dev/null || die 73 "no se pudo crear $DIR"
+fi
+[ -w "$DIR" ] || die 66 "sin permiso de escritura en $DIR"
+[ $EXISTS = 0 ] || [ -w "$TARGET" ] || die 66 "sin permiso de escritura en $TARGET"
+if [ $DELETE = 1 ]; then
+  rm -f "$TARGET" || die 73 "no se pudo eliminar $TARGET"
+  printf 'Bloque de agent-quality-gate eliminado; %s solo contenía el bloque y se ha borrado.\n' "$TARGET"
+  exit 0
+fi
+TMPF=$(mktemp "$DIR/.CLAUDE.md.qg-setup.XXXXXX") || die 73 "no se pudo crear un temporal en $DIR"
+if [ $EXISTS = 1 ]; then cp -p "$TARGET" "$TMPF" 2>/dev/null || { rm -f "$TMPF"; die 73 "no se pudo copiar $TARGET"; }; fi
+if ! cat "$NEW" > "$TMPF" || ! mv -f "$TMPF" "$TARGET"; then rm -f "$TMPF"; die 73 "no se pudo escribir $TARGET"; fi
+# Archivo nuevo: permisos normales según la umask (mktemp crea 600).
+[ $EXISTS = 1 ] || chmod "$(printf '%o' $((0666 & ~0$(umask))))" "$TARGET" 2>/dev/null
+
+case $ACTION in
+  install)
+    if [ "$STATE" = outdated ]; then printf 'agent-quality-gate: bloque actualizado en %s (v%s → v%s).\n' "$TARGET" "$SV" "$BLOCK_VERSION"
+    else printf 'agent-quality-gate configurado correctamente en %s.\n' "$TARGET"; fi
+    printf 'Claude Code cargará estas instrucciones en las próximas sesiones (la sesión actual no recarga CLAUDE.md).\n'
+    printf 'No instala el plugin ni activa los hooks.\n' ;;
+  remove) printf 'Bloque de agent-quality-gate eliminado de %s; el resto del archivo se conserva.\n' "$TARGET" ;;
+esac
+exit 0

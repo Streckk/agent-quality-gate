@@ -15,6 +15,16 @@ QG_HOOKS=1 claude --plugin-dir /ruta/a/agent-quality-gate   # skill + qg + hooks
 claude                                                      # sin plugin (con el symlink, solo la skill)
 ```
 
+Para que Claude use la skill en tus tareas sin escribir `/quality-gate` cada vez, configúralo **una vez**:
+
+```text
+/quality-gate setup                  # añade un bloque breve y administrado al CLAUDE.md del proyecto
+/quality-gate setup --scope user     # o a ~/.claude/CLAUDE.md, para todos tus proyectos
+/quality-gate setup --status         # ¿está configurado?   ·   --dry-run: ver el cambio   ·   --remove: quitarlo
+```
+
+Es idempotente: no duplica el bloque y nunca toca el resto del archivo. Es una instrucción persistente para el modelo, **no** una garantía, y **no** instala el plugin ni activa los hooks. Detalle en [docs/uso-local.md](docs/uso-local.md#configurar-claudemd-una-vez).
+
 Los hooks están desactivados salvo que pongas `QG_HOOKS=1`. `QG_DISABLE=1` los apaga siempre. Nada se instala ni se escribe en `~/.claude/settings.json`. Guía completa (comprobar la carga, consultar la evidencia, qué pasa si falla un test o si falta Codex, desactivar): [docs/uso-local.md](docs/uso-local.md).
 
 ## Los tres pilares

@@ -1,7 +1,7 @@
 ---
 name: quality-gate
 description: Coordina una puerta de calidad sobre cambios de código (propios o del usuario) en cualquier stack. Descubre y ejecuta las verificaciones reales del repositorio (lint, tipos, tests, build), corrige fallos con un límite de reintentos, pide revisión independiente a Codex según el riesgo y emite un reporte con evidencia (passed/failed/blocked/skipped). Usar cuando el usuario invoque /quality-gate, pida "verifica", "pasa la puerta de calidad", "revisa antes de commitear/mergear", o antes de declarar terminado un cambio no trivial.
-argument-hint: "[alcance: working-tree | branch <base> | rutas...] [--risk low|medium|high] [--no-review]"
+argument-hint: "[alcance: working-tree | branch <base> | rutas...] [--risk low|medium|high] [--no-review] | setup [--scope project|user] [--status|--remove|--dry-run]"
 ---
 
 # quality-gate
@@ -14,6 +14,14 @@ Capa ligera de **coordinación** de calidad. No sustituye a otras skills:
 - Contexto de dependencias → Graphify (opcional).
 
 Funciona igual sobre código escrito por el usuario que sobre código generado por Claude.
+
+Argumentos de esta invocación: `$ARGUMENTS`
+
+## Subcomando `setup` (configurar CLAUDE.md)
+
+**Solo** si los argumentos de esta invocación empiezan por la palabra `setup`, no ejecutes el protocolo: lee [setup](references/setup.md) y sigue sus pasos. En cualquier otro caso, ignora esta sección.
+
+Script: `qg-setup` si está en el `PATH` (plugin); si no, `${CLAUDE_SKILL_DIR}/../../bin/qg-setup` (`${CLAUDE_SKILL_DIR}` es el directorio de esta skill; resuélvelo con `cd -P` porque puede ser un symlink).
 
 ## Reglas no negociables
 

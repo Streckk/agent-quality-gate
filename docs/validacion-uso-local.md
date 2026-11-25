@@ -128,3 +128,57 @@ P1 y P2 juntas: `bash evals/run.sh --case e9-risk-auth --case e7-hooks --runs 1 
 No se encontró ningún defecto que impida el uso local: la carga, el registro de sesión, `Stop`, `PreToolUse`, la desactivación y `qg` se comportaron como está documentado. Sí había un **hueco de documentación** para el uso diario (inicio, comprobación, desactivación, qué pasa si…), que se resolvió con `docs/uso-local.md` y el inicio rápido del README.
 
 Fricción menor que **no** se cambió (no es un defecto y evita añadir funcionalidad): `qg session info` exige `--run-id`. La guía usa `qg session info --run-id "$(qg session id)"`.
+
+## 9. `/quality-gate setup` (configuración de CLAUDE.md)
+
+Fecha: 2026-11-25 · Claude Code 2.1.332.
+
+**Pruebas deterministas** (`tests/run_setup_tests.sh`): 99 aserciones, todas en directorios temporales con `HOME` aislado. Cubren los 20 casos pedidos:
+- sin archivo, archivo vacío o con instrucciones previas;
+- repeticiones, actualización y eliminación;
+- archivo sin bloque, bloque incompleto, duplicado o con los marcadores invertidos;
+- CRLF y archivo sin salto final;
+- rutas con espacios;
+- symlinks fuera y dentro del proyecto, y `.claude` enlazado fuera;
+- permisos de archivo y de directorio, y conservación de los permisos;
+- `--scope user` con `HOME` temporal;
+- `--dry-run` y `--status`;
+- `AGENTS.md`, `.claude/CLAUDE.md` y compatibilidad con symlink y plugin.
+
+Además: instrucciones similares fuera del bloque, errores de uso, nada escrito fuera del proyecto, ningún temporal residual y ningún `eval`.
+
+**Idempotencia, comparando contenido exacto:**
+- `setup` ×3 deja el archivo idéntico;
+- `setup` → `--remove` devuelve el original **byte a byte**, también con CRLF;
+- un archivo sin salto final recupera su texto, ahora con salto final.
+
+**Mutaciones:** 9 de 9 defectos reales introducidos en el script se detectaron:
+- bloque malformado tratado como ausente (7 fallos);
+- symlink fuera del alcance (2);
+- `--dry-run` que escribe (6);
+- CRLF (1);
+- `AGENTS.md` (4);
+- no reconocer el bloque existente (23);
+- reescribir aunque esté actualizado (5);
+- duplicar instrucciones similares (1);
+- `--remove` que borra todo (4).
+
+Una décima mutación estaba mal planteada (no cambiaba el comportamiento) y se descartó.
+
+**Claude Code, sin coste** (modelo inexistente, `total_cost_usd: 0`; se lee la transcripción que guarda Claude Code):
+
+| Modo | Skills | Argumentos recibidos | Ruta del script expandida |
+|---|---|---|---|
+| solo symlink | `quality-gate` | `<command-args>setup --status</command-args>` → "Argumentos de esta invocación: `setup --status`" | `/home/…/.claude/skills/quality-gate/../../bin/qg-setup`, que se resuelve al script del repositorio (comprobado) |
+| `--plugin-dir` + symlink | `quality-gate` (una) | ídem | ídem (Claude Code usa la copia del symlink, que es la misma) |
+
+El `CLAUDE.md` del proyecto de prueba no cambió. No se tocó el `CLAUDE.md` personal del propietario.
+
+**Pendiente de autorización (consume cuota):**
+
+| # | Qué cierra | Comando | Estimación |
+|---|---|---|---|
+| S1 | que el modelo siga `references/setup.md`: ejecuta el script con los argumentos exactos y muestra su salida | en un repo temporal: `claude -p "/quality-gate setup" --plugin-dir /home/angel/Desarrollo/agent-quality-gate --model claude-opus-5-5` y, después, `cat CLAUDE.md` | ~0,1–0,2 USD |
+| S2 | que una sesión nueva tiene las instrucciones y usa la skill tras modificar código | en el mismo repo (fixture `node-bug`): `claude -p "Corrige el bug de src/sum.js" --plugin-dir … --model claude-opus-5-5 --output-format stream-json --verbose`, y buscar `Skill` `quality-gate` en la traza | ~0,3–0,6 USD |
+
+S2 es **no determinista**: `CLAUDE.md` es una instrucción, no una garantía. Una sola ejecución no prueba la tasa de uso.

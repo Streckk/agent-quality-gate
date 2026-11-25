@@ -17,6 +17,29 @@ claude                                                                     # sin
 - Si lo usas a menudo, puedes definir un alias en tu shell, por ejemplo `alias claude-qg='QG_HOOKS=1 claude --plugin-dir /home/angel/Desarrollo/agent-quality-gate'`. Es opcional y lo decides tú: este repositorio no modifica tu configuración.
 - **Symlink y plugin a la vez:** el symlink global `~/.claude/skills/quality-gate` apunta a esta misma copia, y Claude Code registra **una sola** skill `quality-gate`. No hace falta borrar nada. Solo habría duplicado (`agent-quality-gate:quality-gate`) si instalaras el plugin en **otra** ruta, por ejemplo desde un marketplace. En ese caso, deja una sola vía ([hooks.md](hooks.md#evitar-la-skill-duplicada)).
 
+## Configurar CLAUDE.md una vez
+
+`/quality-gate setup` añade al `CLAUDE.md` un bloque breve que le dice a Claude **cuándo** usar la skill: al terminar tareas que modifican código, pruebas, dependencias, build o CI. El **cómo** sigue en la skill. Desde la sesión siguiente, Claude lo tiene presente sin que escribas `/quality-gate`.
+
+| Comando | Efecto |
+|---|---|
+| `/quality-gate setup` | instala o actualiza el bloque en el `CLAUDE.md` del proyecto (raíz de Git) |
+| `/quality-gate setup --scope user` | lo mismo en `~/.claude/CLAUDE.md` (todos tus proyectos). Solo si lo pides |
+| `/quality-gate setup --status` | estado: archivo, si existe, si el bloque está instalado o desactualizado, menciones fuera del bloque |
+| `/quality-gate setup --dry-run` | diff del cambio, sin escribir |
+| `/quality-gate setup --remove` | quita **solo** el bloque. Si el archivo no tenía nada más, lo borra |
+
+- **Sin Claude:** también se puede ejecutar desde la terminal con `qg-setup setup [opciones]` (con el plugin cargado, está en el `PATH`) o con `<repo>/bin/qg-setup`.
+- **Idempotente:** repetirlo no cambia ni un byte. Si el bloque es de una versión anterior, solo se reemplaza el bloque. Lo que hay fuera de los marcadores `<!-- agent-quality-gate:start/end -->` se conserva byte a byte, con CRLF incluido. Claude Code elimina esos comentarios antes de pasarle el archivo al modelo.
+- **Se niega, sin tocar nada, cuando:**
+  - el bloque está incompleto o duplicado;
+  - existen `CLAUDE.md` y `.claude/CLAUDE.md` sin bloque (elige con `--file`);
+  - el archivo ya menciona `/quality-gate` fuera del bloque (`--force` para añadirlo igualmente);
+  - `CLAUDE.md` es un enlace simbólico fuera del proyecto;
+  - no hay permiso de escritura.
+- **Proyecto solo con `AGENTS.md`:** Claude Code solo lee `AGENTS.md` cuando **no** hay `CLAUDE.md`. Crear uno dejaría de cargarlo. El setup se detiene y propone `--import-agents`, que crea `CLAUDE.md` con `@AGENTS.md` y el bloque sin tocar `AGENTS.md`.
+- **Qué no hace:** no instala el plugin, no activa hooks, no toca `settings.json` ni `AGENTS.md`, y no ejecuta `/init`. **No garantiza** que Claude invoque la skill: es una instrucción persistente, no una barrera. Para detectar cambios sin evidencia están los hooks (`QG_HOOKS=1`).
+
 ## 2. Comprobar que está cargado
 
 Dentro de la sesión, el prefijo `!` ejecuta un comando de shell sin pasar por el modelo:

@@ -21,12 +21,13 @@ for f in README.md CHANGELOG.md \
          .claude-plugin/plugin.json hooks/hooks.json hooks/session-start.sh hooks/stop.sh \
          hooks/pre-tool-use.sh hooks/lib/common.sh hooks/lib/json.awk tests/run_hook_tests.sh \
          docs/hooks.md docs/agent-evals.md evals/README.md evals/evaluate.sh evals/run.sh \
-         evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh evals/lib/trace.py evals/lib/report.py tests/run_eval_tests.sh; do
+         evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh evals/lib/trace.py evals/lib/report.py tests/run_eval_tests.sh \
+         bin/qg-setup tests/run_setup_tests.sh skills/quality-gate/references/setup.md docs/uso-local.md; do
   [[ -f "$ROOT/$f" ]] && ok "existe $f" || fail "falta $f"
 done
 
 # 1b. Ejecutables de evidencia: sintaxis bash y bit de ejecución
-for f in bin/qg bin/qg-run; do
+for f in bin/qg bin/qg-run bin/qg-setup; do
   [[ -f "$ROOT/$f" ]] || continue
   bash -n "$ROOT/$f" 2>/dev/null && ok "sintaxis $f" || fail "$f: error de sintaxis bash"
   [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
@@ -82,7 +83,7 @@ if [[ -f "$ROOT/hooks/hooks.json" ]]; then
 fi
 
 # Sin eval en los ejecutables (requisito de seguridad del ejecutor y de los hooks).
-for f in bin/qg bin/qg-run hooks/session-start.sh hooks/stop.sh hooks/pre-tool-use.sh hooks/lib/common.sh; do
+for f in bin/qg bin/qg-run bin/qg-setup hooks/session-start.sh hooks/stop.sh hooks/pre-tool-use.sh hooks/lib/common.sh; do
   if [[ -f "$ROOT/$f" ]] && grep -vE '^[[:space:]]*#' "$ROOT/$f" | grep -qE '(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)'; then
     fail "$f: usa eval"
   else

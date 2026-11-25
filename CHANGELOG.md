@@ -4,6 +4,16 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (configuración de CLAUDE.md)
+- `/quality-gate setup [--scope project|user] [--status|--remove|--dry-run] [--file …] [--import-agents] [--force]`: instala, actualiza, consulta o quita un bloque administrado y versionado (`<!-- agent-quality-gate:start v1 -->`) con las instrucciones de **cuándo** usar la skill.
+  - La skill recibe los argumentos con `$ARGUMENTS` y delega en el script determinista `bin/qg-setup`, que está en el `PATH` del plugin y se localiza con `${CLAUDE_SKILL_DIR}` si la skill se instaló por symlink.
+  - Es idempotente y conserva byte a byte el resto del archivo (CRLF y archivos sin salto final incluidos).
+  - Escribe con un temporal y `mv`, conservando los permisos.
+  - Rechaza symlinks fuera del alcance, bloques malformados o duplicados y ubicaciones ambiguas.
+  - Protege `AGENTS.md`, que Claude Code deja de leer si aparece un `CLAUDE.md`.
+- `tests/setup/test_setup.sh` (99 aserciones; 9 de 9 mutaciones efectivas detectadas) y `tests/run_setup_tests.sh`, en la CI de Linux y macOS (también con `/bin/bash` 3.2) y con ShellCheck.
+- Carga verificada sin coste: la transcripción de Claude Code 2.1.332 muestra `<command-args>setup --status</command-args>`, `$ARGUMENTS` y `${CLAUDE_SKILL_DIR}` sustituidos, con symlink y con `--plugin-dir`.
+
 ### Añadido (uso local)
 - `docs/uso-local.md`: guía de uso diario con `--plugin-dir` (iniciar, comprobar la carga, verificar, qué pasa si…, desactivar, proyecto de juguete y cómo llevarlo a otros stacks).
 - Inicio rápido en el README.

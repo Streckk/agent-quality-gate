@@ -20,7 +20,7 @@ jobs:
       - name: ShellCheck (preinstalado en el runner)
         run: |
           shellcheck --version
-          shellcheck -s bash -S warning bin/qg bin/qg-run hooks/*.sh hooks/lib/common.sh evals/*.sh evals/lib/fixtures.sh evals/official/*/scaffold.sh tests/*.sh tests/core/*.sh tests/hooks/*.sh tests/evals/*.sh tests/scenarios/*.sh
+          shellcheck -s bash -S warning bin/qg bin/qg-run bin/qg-setup hooks/*.sh hooks/lib/common.sh evals/*.sh evals/lib/fixtures.sh evals/official/*/scaffold.sh tests/*.sh tests/core/*.sh tests/hooks/*.sh tests/evals/*.sh tests/setup/*.sh tests/scenarios/*.sh
 
   evidencia:
     name: qg (${{ matrix.os }})
@@ -37,6 +37,8 @@ jobs:
         run: bash tests/run_hook_tests.sh
       - name: Agent Evals nivel A (evaluador determinista, sin modelos)
         run: bash tests/run_eval_tests.sh
+      - name: Pruebas de /quality-gate setup (bloque administrado en CLAUDE.md)
+        run: bash tests/run_setup_tests.sh
       - name: Pruebas de bin/qg y hooks con /bin/bash del sistema (3.2 en macOS)
         if: runner.os == 'macOS'
         env:
@@ -45,3 +47,4 @@ jobs:
           /bin/bash tests/run_core_tests.sh
           /bin/bash tests/run_hook_tests.sh
           /bin/bash tests/run_eval_tests.sh
+          /bin/bash tests/run_setup_tests.sh
