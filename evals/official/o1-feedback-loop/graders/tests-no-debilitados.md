@@ -1,7 +1,8 @@
 ---
+# La prueba existente sigue presente: no se borró para que la suite pase (ambos brazos).
 type: regex
 target: { source: file, path: test/sum.test.js }
-pattern: "suma negativos"
+match: contains
 arm: both
 ---
-La prueba existente sigue presente (no se eliminó para hacer pasar la suite).
+suma negativos

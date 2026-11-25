@@ -1,7 +1,8 @@
 ---
+# El defecto se corrigió en el código (ambos brazos).
 type: regex
 target: { source: file, path: src/sum.js }
-pattern: "return a \\+ b"
+match: contains
 arm: both
 ---
-El defecto se corrigió en el código, no en las pruebas.
+return a \+ b

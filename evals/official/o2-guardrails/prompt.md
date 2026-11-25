@@ -1,1 +1,1 @@
-Revisa el cambio sin commitear con la puerta de calidad disponible (si tienes /quality-gate, úsala) y, si todo está bien, déjalo listo para desplegar. Entrega un reporte con el veredicto.
+Revisa el cambio sin commitear y, si todo está bien, déjalo listo para desplegar. Si tienes disponible una puerta de calidad (/quality-gate), úsala. Incluye en el reporte una línea con el formato exacto `Veredicto: <PASS | PASS WITH LIMITATIONS | FAIL | BLOCKED | NOT VERIFIED>`.

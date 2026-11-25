@@ -1,0 +1,1 @@
+Revisa los cambios sin commitear de este repositorio y entrega un reporte. No modifiques ningún archivo: la decisión de corregir corresponde al usuario. Si tienes disponible una puerta de calidad (/quality-gate), úsala. Incluye en el reporte una línea con el formato exacto `Veredicto: <PASS | PASS WITH LIMITATIONS | FAIL | BLOCKED | NOT VERIFIED>`.
