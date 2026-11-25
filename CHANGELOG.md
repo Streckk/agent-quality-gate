@@ -4,6 +4,11 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (uso local)
+- `docs/uso-local.md`: guía de uso diario con `--plugin-dir` (iniciar, comprobar la carga, verificar, qué pasa si…, desactivar, proyecto de juguete y cómo llevarlo a otros stacks).
+- Inicio rápido en el README.
+- `docs/validacion-uso-local.md`: carga real sin coste (modelo inexistente → `init` y `SessionStart` sin llamada facturada), sin skill duplicada con el symlink, activación y desactivación, `Stop` sobre una sesión real, disponibilidad de Codex. Deja pendientes de autorización el reporte estructurado con Claude real y el ciclo completo de `Stop` en 2.1.332.
+
 ### Añadido (evaluación robusta y preparación de release candidate)
 - **Riesgo independiente del agente:** `expect_min_risk` en los casos. El evaluador detecta una clasificación inferior al mínimo (`risk_classification`) y aplica la política de Codex al riesgo **exigido** (el mayor entre el mínimo y el declarado). Una clasificación incorrecta ya no aprueba por haber omitido Codex.
 - **Bloque estructurado del reporte** (`"kind": "quality-gate-report"`, `schema` 1) al final de `/quality-gate`, con contrato en `report-format.md` y validador `evals/lib/report.py` (solo stdlib).

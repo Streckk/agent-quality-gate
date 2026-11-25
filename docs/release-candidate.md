@@ -2,6 +2,8 @@
 
 Estado a 2026-11-24, sobre `v0.2.0-dev` con los cambios de la iteración de evaluación robusta ([validacion-v0.2.0-rc.md](validacion-v0.2.0-rc.md)). **No se ha creado ningún tag ni release.**
 
+**Uso local:** listo. La licencia, el marketplace, el icono y la versión estable **no** bloquean el uso diario con `--plugin-dir` ([uso-local.md](uso-local.md), [validacion-uso-local.md](validacion-uso-local.md)). Solo afectan a la publicación.
+
 Leyenda: ✅ cumplido · ⏳ pendiente · ⚠️ riesgo aceptable (documentado) · ⛔ bloquearía una versión estable.
 
 ## 1. Checklist

@@ -28,7 +28,7 @@ cd mi-proyecto
 QG_HOOKS=1 claude --plugin-dir /ruta/a/agent-quality-gate      # hooks activados solo en esta sesión
 ```
 
-`--plugin-dir` carga el plugin para esa sesión, sin instalarlo ni modificar `settings.json`.
+`--plugin-dir` carga el plugin para esa sesión, sin instalarlo ni modificar `settings.json`. Guía de uso diario: [uso-local.md](uso-local.md).
 
 ### Instalar como plugin
 
@@ -44,7 +44,7 @@ La skill encuentra `qg` junto a sí misma (`<skill>/../../bin/qg`). No hay hooks
 
 ### Evitar la skill duplicada
 
-Observado en 2.1.331: si el symlink apunta a **la misma copia** que cargas como plugin (`--plugin-dir` de ese repo), Claude Code registra **una sola** skill (`quality-gate`). Parece que deduplica por ruta real. Si el plugin se instala en otra ruta (caché de plugins), habrá **dos** skills con el mismo contenido: `quality-gate` (symlink) y `agent-quality-gate:quality-gate` (plugin). Funcionan igual y comparten evidencia, porque usan el mismo `qg` y el mismo run-id de sesión, pero conviene usar una sola vía:
+Observado en 2.1.331 y confirmado en 2.1.332 (evento `init`, que lista `skills: ["quality-gate"]` con el plugin cargado; ver [validacion-uso-local.md](validacion-uso-local.md)): si el symlink apunta a **la misma copia** que cargas como plugin (`--plugin-dir` de ese repo), Claude Code registra **una sola** skill (`quality-gate`). Parece que deduplica por ruta real. Si el plugin se instala en otra ruta (caché de plugins), habrá **dos** skills con el mismo contenido: `quality-gate` (symlink) y `agent-quality-gate:quality-gate` (plugin). Funcionan igual y comparten evidencia, porque usan el mismo `qg` y el mismo run-id de sesión, pero conviene usar una sola vía:
 
 - **con plugin:** elimina el symlink (`rm ~/.claude/skills/quality-gate`);
 - **sin plugin:** mantén el symlink.

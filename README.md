@@ -6,6 +6,17 @@ No es un motor ni una CLI. Es un conjunto de instrucciones (`SKILL.md` + referen
 
 Funciona sin Nx, sin Node, sin Graphify y sin Codex. Las integraciones opcionales se detectan en tiempo de ejecución y, si faltan, se reportan como `skipped`, nunca se simulan.
 
+## Inicio rápido (uso local, sin instalar)
+
+```bash
+cd <tu-proyecto>
+QG_HOOKS=1 claude --plugin-dir /ruta/a/agent-quality-gate   # skill + qg + hooks, solo en esta sesión
+# en la sesión:  /quality-gate          ·  comprobar:  ! command -v qg && qg hooks status
+claude                                                      # sin plugin (con el symlink, solo la skill)
+```
+
+Los hooks están desactivados salvo que pongas `QG_HOOKS=1`. `QG_DISABLE=1` los apaga siempre. Nada se instala ni se escribe en `~/.claude/settings.json`. Guía completa (comprobar la carga, consultar la evidencia, qué pasa si falla un test o si falta Codex, desactivar): [docs/uso-local.md](docs/uso-local.md).
+
 ## Los tres pilares
 
 | Pilar | Qué hace la v1 | Referencia |
