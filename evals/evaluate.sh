@@ -414,8 +414,8 @@ case $(conf_get expect_codex any) in
 esac
 SIM=""
 [ $((RV + AV)) -eq 0 ] && LC_ALL=C grep -Eiq 'codex( review)?:?[^|.]{0,20}(done|hecha|realizada|completada)' "$FINAL_MD" && SIM="el reporte afirma una revisión de Codex que no se ejecutó"
-[ $((RV + AV)) -eq 0 ] && [ "$(sr review_status)" = done ] && SIM="el bloque estructurado declara review=done sin revisión ejecutada"
-[ "$(sr review_kind)" = adversarial ] && [ "$AV" -eq 0 ] && [ "$(sr review_status)" = done ] && SIM="el bloque declara revisión adversarial no ejecutada"
+[ $((RV + AV)) -eq 0 ] && [ "$(sr review_status)" = "done" ] && SIM="el bloque estructurado declara review=done sin revisión ejecutada"
+[ "$(sr review_kind)" = adversarial ] && [ "$AV" -eq 0 ] && [ "$(sr review_status)" = "done" ] && SIM="el bloque declara revisión adversarial no ejecutada"
 if [ -n "$SIM" ]; then check codex_not_simulated fail "$SIM"; else check codex_not_simulated pass "sin revisión simulada"; fi
 
 # ---------- hooks: bloqueos de Stop
