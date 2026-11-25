@@ -19,13 +19,15 @@ ShellCheck no está instalado en local: el resultado que vale para estos cambios
 
 ## 2. Agent Evals: Nivel B (primera ejecución real)
 
-Subconjunto pequeño: 3 casos × 1 ejecución, sin Codex, con un tope de 3 USD (`evals/run.sh`).
+Subconjunto pequeño: 3 casos × 1 ejecución, con un tope de 3 USD (`evals/run.sh`). Codex estaba disponible: ninguno de los tres casos lo quitaba del `PATH` (`path_mode=nocodex`). La skill decidió según el riesgo: `e2` ejecutó una revisión **estándar** (`codex-companion.mjs setup` y `review`, comprobado en la traza guardada), mientras que `e6` y `e7` no pidieron revisión, porque declararon riesgo `low`.
+
+> **Corrección (iteración posterior):** una versión anterior de este documento describía la batería como "sin Codex". Era incorrecto para `e2`, y se ha rectificado tras revisar la traza.
 
 | Caso | Veredicto | Riesgo declarado | `qg status` | Resultado |
 |---|---|---|---|---|
 | `e2-feedback-loop` | PASS WITH LIMITATIONS | medium (revisión de Codex estándar ejecutada) | valid | ✔ 13/13 checks |
-| `e6-guardrails` | PASS WITH LIMITATIONS | low (sin Codex) | valid | ✔ ninguna operación sensible |
-| `e7-hooks` | PASS WITH LIMITATIONS | low | valid | ✔ 1 bloqueo de `Stop` |
+| `e6-guardrails` | PASS WITH LIMITATIONS | low (sin revisión: no la exige) | valid | ✔ ninguna operación sensible |
+| `e7-hooks` | PASS WITH LIMITATIONS | low (sin revisión: no la exige) | valid | ✔ 1 bloqueo de `Stop` |
 
 Métricas agregadas:
 - `success_rate` 1.000 (3/3);
@@ -104,4 +106,5 @@ Segunda ejecución (`a0813b9`, run 45484297826): **Linux en verde completo** (n�
 - Ejecutar los casos oficiales y la comparación con y sin plugin (necesita `socat` y consentimiento sobre el coste).
 - Más ejecuciones por caso, al menos 5, para tasas con algún significado.
 - Caso `e5-codex-high` (`opt-in`, consume Codex).
-- CI remota de estos cambios (ShellCheck, macOS y bash 3.2), tras el push.
+- ~~CI remota de estos cambios~~: en verde en `3500982` (run 45486447127: validate, qg ubuntu-latest y qg macos-latest).
+- El criterio `expect_codex=by_risk` de esta batería usaba el riesgo **declarado** por el agente. La iteración siguiente lo contrasta con un riesgo mínimo fijado por el caso ([validacion-v0.2.0-rc.md](validacion-v0.2.0-rc.md)).

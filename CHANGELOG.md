@@ -4,6 +4,26 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (evaluación robusta y preparación de release candidate)
+- **Riesgo independiente del agente:** `expect_min_risk` en los casos. El evaluador detecta una clasificación inferior al mínimo (`risk_classification`) y aplica la política de Codex al riesgo **exigido** (el mayor entre el mínimo y el declarado). Una clasificación incorrecta ya no aprueba por haber omitido Codex.
+- **Bloque estructurado del reporte** (`"kind": "quality-gate-report"`, `schema` 1) al final de `/quality-gate`, con contrato en `report-format.md` y validador `evals/lib/report.py` (solo stdlib).
+  - El evaluador contrasta el bloque con el Markdown (`report_consistency`) y con `qg`, los registros y la traza (`structured_evidence`). Cualquier aprobación sin respaldo, en el Markdown **o** en el bloque, es un falso `PASS`.
+  - Los reportes antiguos sin bloque se siguen leyendo.
+- **Categorías de resultado:** `fail` (confirmado), `suspected` (heurístico, `needs_review`), `inconclusive` y `na`. Por ejecución, `outcome` ∈ {pass, fail, inconclusive, infra_error, evaluator_error}.
+  - Los errores del evaluador o del caso (regex inválida, valores desconocidos, marcadores inexistentes, muerte del script) se registran como `evaluator_error`: nunca como fallo del agente y siempre visibles.
+- `protected_markers` (literales que deben seguir en las pruebas protegidas), obligatorias **vigentes** (sobre la huella actual) y guardrails confirmados por el `tool_result` de la traza.
+- Métricas nuevas: `risk_classification_accuracy`, `structured_report_valid`, `evaluator_errors`, `inconclusive_checks`, `suspected_checks`, `guardrail_suspected` y duplicados ignorados. `success_rate` usa como denominador las ejecuciones decididas.
+- `compare.sh` muestra el brazo, el modelo y las condiciones, y avisa si difieren. `run.sh --model` registra el modelo y lo fija.
+- Caso `e9-risk-auth` (auth sin pista en la tarea y sin Codex) y caso oficial `o3-no-false-pass`.
+- Validador: rechaza claves desconocidas en `case.conf` (más 2 detecciones en el autotest).
+- Pruebas: `tests/evals/test_risk_report.sh`, `test_aggregate.sh` y `test_official.sh`.
+- Documentos: `docs/comparacion-con-sin-plugin.md` (diseño y presupuesto, sin ejecutar), `docs/release-candidate.md` y `docs/validacion-v0.2.0-rc.md`.
+
+### Corregido (evaluación robusta)
+- Evaluadores oficiales: el patrón de `regex` estaba en una clave `pattern:` del frontmatter. Según la plantilla de `claude plugin eval` 2.1.332, va en el cuerpo. Ahora las instrucciones son idénticas en los dos brazos y hay evaluadores comunes de veredicto.
+- `report-format.md` presentaba los hooks como trabajo futuro; ya existen y son opcionales.
+- `docs/validacion-v0.2.0-evals.md` describía la primera batería como "sin Codex", pero `e2` ejecutó una revisión estándar (comprobado en la traza).
+
 ### Añadido (Agent Evals)
 - `evals/`: 11 casos (`case.conf` con criterios explícitos + `task.md`), fixtures Git reproducibles (`refs/eval/base`) y:
   - evaluador determinista que consulta `qg status --json`, registros, `git` y la traza (falsos `PASS`, obligatorias omitidas, evidencia obsoleta o ajena, tests debilitados, alcance, iteraciones, guardrails, Codex simulado o innecesario, bloqueos de `Stop`, errores de infraestructura aparte);

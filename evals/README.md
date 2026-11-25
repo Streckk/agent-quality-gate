@@ -5,6 +5,8 @@ Agent Evals de `/quality-gate`. La documentación completa está en [docs/agent-
 - `cases/`: casos propios (`case.conf` con criterios + `task.md`), evaluados con evidencia real de `qg` por `evaluate.sh`.
 - `official/`: casos en formato `claude plugin eval` (aislamiento y comparación con y sin plugin).
 - `lib/fixtures.sh`: fixtures Git sintéticos y reproducibles. **Nunca** uses proyectos reales.
+- `lib/trace.py`, `lib/report.py`: hechos de la traza y validación del bloque estructurado del reporte.
+- Comparación con y sin plugin (pendiente de autorización): [docs/comparacion-con-sin-plugin.md](../docs/comparacion-con-sin-plugin.md).
 - `runs/`, `results/`: resultados locales; no se versionan ni se publican.
 
 ```bash

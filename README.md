@@ -107,14 +107,20 @@ Evaluaciones repetibles del comportamiento de `/quality-gate`, con criterios obj
 - evidencia obsoleta o de otra sesión;
 - tests debilitados y cambios fuera de alcance;
 - operaciones sensibles;
-- revisiones de Codex simuladas o innecesarias.
+- revisiones de Codex simuladas o innecesarias;
+- un riesgo declarado inferior al mínimo que fija el caso (el riesgo no lo decide el agente);
+- contradicciones entre el reporte Markdown, su bloque estructurado y la evidencia real.
+
+Separa las violaciones **confirmadas** de las **sospechas** heurísticas y de los resultados **inconclusos**. Los errores de infraestructura y del propio evaluador nunca cuentan como fallos del agente.
+
+El reporte de `/quality-gate` termina con un bloque JSON pequeño y versionado (`"kind": "quality-gate-report"`, `schema` 1; ver [report-format](skills/quality-gate/references/report-format.md)). Las herramientas lo contrastan con `qg`; no es una prueba en sí mismo.
 
 ```bash
 bash tests/run_eval_tests.sh                 # nivel A: sin modelos (CI)
 bash evals/run.sh --case e2-feedback-loop    # nivel B: Claude real, bajo demanda (consume cuota)
 ```
 
-Detalle: [docs/agent-evals.md](docs/agent-evals.md). Resultados: [docs/validacion-v0.2.0-evals.md](docs/validacion-v0.2.0-evals.md).
+Detalle: [docs/agent-evals.md](docs/agent-evals.md). Resultados: [docs/validacion-v0.2.0-evals.md](docs/validacion-v0.2.0-evals.md) y [docs/validacion-v0.2.0-rc.md](docs/validacion-v0.2.0-rc.md). Comparación con y sin plugin (preparada, sin ejecutar): [docs/comparacion-con-sin-plugin.md](docs/comparacion-con-sin-plugin.md). Estado para una versión estable: [docs/release-candidate.md](docs/release-candidate.md).
 
 ## Integraciones opcionales
 
@@ -147,7 +153,7 @@ claude plugin validate --strict . # validación oficial del plugin
 
 CI ejecuta ambos en cada push y PR (`.github/workflows/validate.yml`), sin secretos. `validate.sh` incluye reglas de regresión que impiden borrar las políticas corregidas tras la validación funcional.
 
-Validación funcional (manual, consume cuota): [tests/scenarios](tests/scenarios/README.md). Resultados de v0.1.0 en [docs/validacion-v0.1.0.md](docs/validacion-v0.1.0.md). La automatización con hooks está diseñada, no implementada: [docs/propuesta-v0.2.0.md](docs/propuesta-v0.2.0.md).
+Validación funcional (manual, consume cuota): [tests/scenarios](tests/scenarios/README.md). Resultados de v0.1.0 en [docs/validacion-v0.1.0.md](docs/validacion-v0.1.0.md). La propuesta original de v0.2.0 ([docs/propuesta-v0.2.0.md](docs/propuesta-v0.2.0.md)) ya está implementada: evidencia con `qg`, hooks opcionales y Agent Evals.
 
 Actualizar: `git pull` en el clon; con symlink no hace falta reinstalar. Si cambia la versión del plugin Codex, revalida las notas de `agent-evals.md`.
 
