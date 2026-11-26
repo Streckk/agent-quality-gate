@@ -10,6 +10,7 @@
 #   qg require [--run-id ID] [--clear] [<id>…]      declara las verificaciones obligatorias (por sesión)
 #   qg status [--require ID]… [--run-id ID] [--json]  ¿hay evidencia vigente para el estado actual?
 #   qg reject [--run-id ID] <check-id> --reason R   descarta la última evidencia (p. ej. exit 0 sin pruebas)
+#   qg classify [--json] -- <cmd> [args…]           clase de efectos secundarios antes de ejecutar (solo lee)
 #   qg version [--json]                             versión e interfaz
 #   qg session id|start|info|stop …                 estado de sesiones de Claude Code (hooks)
 #   qg hooks status [--json] | enabled <hook>       activación voluntaria de los hooks
@@ -24,7 +25,7 @@ QG_VERSION="0.2.0-dev"
 QG_SCHEMA=1
 # Interfaz (solo ampliaciones): 2: require/status por sesión, reject, version · 3: session, hooks
 # 4: líneas base de diagnósticos (run --baseline, baseline write, objeto "baseline" y
-#    "baseline_checks" en status --json)
+#    "baseline_checks" en status --json) · classify (clasificación previa, no ejecuta nada)
 QG_INTERFACE=4
 EX_USAGE=64
 EX_STATE=65
@@ -1511,10 +1512,493 @@ qg_cmd_hooks() {
   esac
 }
 
+# ---------------------------------------------------------------- classify
+
+# Clasificación previa de efectos secundarios. Solo lee archivos: jamás ejecuta el comando ni
+# ningún script. Gana la coincidencia más grave (1 read-only … 6 external); lo que no se puede
+# inspeccionar es unknown (5, por encima de installs/writes), nunca read-only. El estado vive en
+# globales (CL_*) para no depender de subshells. "depth" = niveles de indirección ya resueltos:
+# se admite uno (npm run a → npm run b); más allá es unknown (indirect).
+CL_RANK=0; CL_REASONS=""; CL_SOURCE=""
+CL_PKG=""; CL_PKG_STATE=""; CL_SCRIPTS=""; CL_BODY=""
+CL_PNPM_AUTO=""
+
+cl_name() {
+  case $1 in
+    1) echo read-only ;; 2) echo writes-generated ;; 3) echo writes-source ;;
+    4) echo installs-dependencies ;; 6) echo external-side-effects ;;
+    *) echo unknown ;;
+  esac
+}
+
+cl_add() {   # cl_add <rango> <código> <detalle>
+  local line="$2: $3"
+  [ "$1" -gt "$CL_RANK" ] && CL_RANK=$1
+  case "$CL_REASONS" in
+    *"$line"$'\n'*) ;;
+    *) CL_REASONS="$CL_REASONS$line"$'\n' ;;
+  esac
+}
+cl_src() {
+  case "$CL_SOURCE" in *"$1"$'\n'*) ;; *) CL_SOURCE="$CL_SOURCE$1"$'\n' ;; esac
+}
+
+# Primer archivo existente entre $PWD y la raíz del repo (si la hay).
+cl_find() {
+  local top
+  [ -f "$PWD/$1" ] && { printf '%s' "$PWD/$1"; return 0; }
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -f "$top/$1" ] && { printf '%s' "$top/$1"; return 0; }
+  return 1
+}
+
+# Extrae el objeto "scripts" (nivel superior) de package.json con awk POSIX.
+# Salida: "OK" y una línea "nombre<TAB>valor" por script; "ERR" si el JSON no se lee con certeza.
+cl_pkg_scripts() {
+  LC_ALL=C awk '
+    function ws() { while (pos <= n && index(" \t\r\n", substr(s, pos, 1))) pos++ }
+    function bad() { print "ERR"; failed = 1; exit 2 }
+    function str(   c, out, e, h) {
+      if (substr(s, pos, 1) != "\"") bad()
+      pos++; out = ""
+      while (1) {
+        if (pos > n) bad()
+        c = substr(s, pos, 1)
+        if (c == "\"") { pos++; return out }
+        if (c == "\\") {
+          e = substr(s, pos + 1, 1); pos += 2
+          if (e == "n") out = out " ; "
+          else if (e == "t" || e == "r" || e == "b" || e == "f") out = out " "
+          else if (e == "\"" || e == "\\" || e == "/") out = out e
+          else if (e == "u") {
+            h = substr(s, pos, 4)
+            if (h !~ /^[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$/) bad()
+            pos += 4; out = out "?"
+          } else bad()
+        } else { out = out c; pos++ }
+      }
+    }
+    function skipval(   c, d) {
+      ws(); c = substr(s, pos, 1)
+      if (c == "\"") { str(); return }
+      if (c == "{" || c == "[") {
+        pos++; d = 1
+        while (d > 0) {
+          if (pos > n) bad()
+          c = substr(s, pos, 1)
+          if (c == "\"") { str(); continue }
+          if (c == "{" || c == "[") d++
+          else if (c == "}" || c == "]") d--
+          pos++
+        }
+        return
+      }
+      if (match(substr(s, pos), /^(true|false|null|-?[0-9][0-9.eE+-]*)/)) { pos += RLENGTH; return }
+      bad()
+    }
+    function scripts(   k, v, c) {
+      pos++; ws()
+      if (substr(s, pos, 1) == "}") { pos++; return }
+      while (1) {
+        ws(); k = str(); ws()
+        if (substr(s, pos, 1) != ":") bad()
+        pos++; ws(); v = str()
+        out = out k "\t" v "\n"
+        ws(); c = substr(s, pos, 1); pos++
+        if (c == "}") return
+        if (c != ",") bad()
+      }
+    }
+    { s = s $0 "\n" }
+    END {
+      n = length(s); pos = 1; ws()
+      if (substr(s, pos, 1) != "{") bad()
+      pos++; ws()
+      if (substr(s, pos, 1) == "}") { pos++ }
+      else while (1) {
+        ws(); k = str(); ws()
+        if (substr(s, pos, 1) != ":") bad()
+        pos++; ws()
+        if (k == "scripts") {
+          if (substr(s, pos, 1) != "{") bad()
+          scripts()
+        } else skipval()
+        ws(); c = substr(s, pos, 1); pos++
+        if (c == "}") break
+        if (c != ",") bad()
+      }
+      ws(); if (pos <= n) bad()
+      print "OK"; printf "%s", out
+    }' "$1" 2>/dev/null
+}
+
+cl_load_pkg() {
+  [ -n "$CL_PKG_STATE" ] && return 0
+  local f out
+  if ! f=$(cl_find package.json); then CL_PKG_STATE=missing; return 0; fi
+  CL_PKG=$f
+  out=$(cl_pkg_scripts "$f")
+  case $out in
+    OK*) CL_PKG_STATE=ok; CL_SCRIPTS=${out#OK}; CL_SCRIPTS=${CL_SCRIPTS#$'\n'} ;;
+    *)   CL_PKG_STATE=error ;;
+  esac
+}
+
+# Valor del último script con ese nombre en CL_SCRIPTS → CL_BODY; retorno 1 si no existe.
+cl_lookup() {
+  CL_BODY=$(CL_N=$1 awk -F '\t' '
+    BEGIN { n = ENVIRON["CL_N"] }
+    $1 == n { v = substr($0, length($1) + 2); f = 1 }
+    END { if (f) print "F" v }' <<EOF
+$CL_SCRIPTS
+EOF
+)
+  [ -n "$CL_BODY" ] || return 1
+  CL_BODY=${CL_BODY#F}
+}
+
+# ¿pnpm instala dependencias antes de ejecutar scripts? Deja el archivo (o "none") en CL_PNPM_AUTO.
+cl_pnpm_auto() {
+  [ -n "$CL_PNPM_AUTO" ] && return 0
+  local f top
+  top=$(git rev-parse --show-toplevel 2>/dev/null)
+  for f in "$PWD/.npmrc" "$PWD/pnpm-workspace.yaml" ${top:+"$top/.npmrc" "$top/pnpm-workspace.yaml"}; do
+    [ -f "$f" ] || continue
+    if grep -Eq "^[[:space:]]*(verify-deps-before-run|verifyDepsBeforeRun)[[:space:]]*[=:][[:space:]]*[\"']?install[\"']?[[:space:]]*(#.*)?\$" "$f" 2>/dev/null; then
+      CL_PNPM_AUTO=$f; return 0
+    fi
+  done
+  CL_PNPM_AUTO=none
+}
+
+# Indicio por palabra completa (argumento suelto o parte de un nombre de script).
+cl_word() {   # cl_word <palabra> <contexto>
+  case $1 in
+    deploy|publish|release|migrate|seed|push) cl_add 6 external "'$1' en $2" ;;
+    install|i|add|ci) cl_add 4 install "'$1' en $2" ;;
+    format) cl_add 3 format "'$1' en $2" ;;
+    codegen|generate|build) cl_add 2 generate "'$1' en $2" ;;
+  esac
+}
+
+# Indicios por nombre de script (build:release → build, release). "format:check" no cuenta como format.
+cl_name_hints() {
+  local w parts
+  parts=$(printf '%s' "$1" | tr ':_./-' '     ')
+  case " $parts " in *" check "*|*" verify "*) parts=${parts//format/} ;; esac
+  for w in $parts; do
+    case $w in
+      deploy|publish|release|migrate|seed|push|format|codegen|generate|build)
+        cl_word "$w" "el nombre del script '$1'" ;;
+    esac
+  done
+}
+
+# Texto de shell: lo separa en órdenes simples y clasifica cada una.
+cl_text() {   # cl_text <depth> <texto>
+  local lvl=$1 t=$2 seg
+  case $t in *'$('*|*'`'*) cl_add 5 ambiguous "sustitución de comandos o variable de make en: $t" ;; esac
+  t=$(CL_T=$t awk '
+    BEGIN {
+      t = ENVIRON["CL_T"]; n = length(t); q = ""; out = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(t, i, 1); d = substr(t, i, 2)
+        if (c == "\\" && q != "\047") { out = out c substr(t, i + 1, 1); i++; continue }
+        if (q != "") {
+          if (c == q) q = ""
+          if (c == ";" || c == "|" || c == "&") c = "\001"
+          out = out c; continue
+        }
+        if (c == "\"" || c == "\047") { q = c; out = out c; continue }
+        if (d == "&&" || d == "||") { out = out "\n"; i++; continue }
+        if (c == ";" || c == "|") { out = out "\n"; continue }
+        out = out c
+      }
+      print out
+    }')
+  while IFS= read -r seg; do
+    [ -n "${seg//[[:space:]]/}" ] || continue
+    set -f; set -- $seg; set +f
+    cl_seg "$lvl" "$@"
+  done <<EOF
+$t
+EOF
+}
+
+# Script de package.json: su cuerpo, y pre<s>/post<s> (npm los ejecuta solos).
+cl_run_script() {   # cl_run_script <depth> <script>
+  local lvl=$1 s=$2 p
+  if [ "$lvl" -gt 1 ]; then cl_add 5 indirect "más de un nivel de indirección al llegar a '$s'"; return; fi
+  cl_name_hints "$s"
+  cl_load_pkg
+  case $CL_PKG_STATE in
+    missing) cl_add 5 not_found "no hay package.json"; return ;;
+    error)   cl_add 5 parse_error "package.json no se puede leer con certeza"; cl_src "$CL_PKG"; return ;;
+  esac
+  cl_src "$CL_PKG"
+  cl_lookup "$s" || { cl_add 5 script_inexistente "el script '$s' no está en package.json"; return; }
+  cl_text "$((lvl + 1))" "$CL_BODY"
+  for p in "pre$s" "post$s"; do
+    if cl_lookup "$p"; then cl_text "$((lvl + 1))" "$CL_BODY"; fi
+  done
+}
+
+cl_pm() {   # cl_pm <depth> <gestor> <args…>
+  local lvl=$1 pm=$2 sub s; shift 2
+  while [ $# -ge 1 ]; do case $1 in -*) shift ;; *) break ;; esac; done   # opciones globales
+  [ $# -ge 1 ] || { cl_add 5 ambiguous "$pm sin subcomando"; return; }
+  sub=$1; shift
+  case $sub in
+    run|run-script)
+      s=${1:-}
+      [ -n "$s" ] || { cl_add 5 ambiguous "$pm run sin nombre de script"; return; } ;;
+    test|t|start) s=$sub ;;
+    install|i|add|ci|update|up|upgrade|remove|rm|uninstall|link|rebuild|dedupe|create|init|dlx)
+      cl_add 4 install "'$pm $sub' instala o modifica dependencias"; return ;;
+    publish|audit|login|logout|deploy) cl_add 6 external "'$pm $sub' toca sistemas externos"; return ;;
+    exec|x)
+      if [ $# -ge 1 ]; then cl_seg "$lvl" "$@"; else cl_add 5 ambiguous "$pm $sub sin comando"; fi
+      return ;;
+    *)
+      case $pm in
+        npm) cl_add 5 ambiguous "subcomando de npm no analizado: $sub"; return ;;
+      esac
+      case $sub in
+        list|ls|why|outdated|pack|store|config|cache|prune|patch|info|view|help|version|licenses|bin|root)
+          cl_add 5 ambiguous "subcomando de $pm no analizado: $sub"; return ;;
+      esac
+      s=$sub ;;   # pnpm|yarn|bun <script>
+  esac
+  if [ "$pm" = pnpm ]; then
+    cl_pnpm_auto
+    if [ "$CL_PNPM_AUTO" != none ]; then
+      cl_add 4 pnpm_auto_install "pnpm instala dependencias antes de ejecutar scripts (verify-deps-before-run=install en ${CL_PNPM_AUTO##*/})"
+      cl_src "$CL_PNPM_AUTO"
+    fi
+  fi
+  cl_run_script "$lvl" "$s"
+}
+
+cl_make() {   # cl_make <depth> <args…>
+  local lvl=$1 t="" a mf body line d; shift
+  for a in "$@"; do
+    case $a in
+      -f|-C|--file|--directory|-f?*|-C?*|--file=*|--directory=*)
+        cl_add 5 ambiguous "make con $a: no se resuelve"; return ;;
+      -*|*=*) ;;
+      *) t=$a; break ;;
+    esac
+  done
+  if [ -z "$t" ]; then cl_add 5 ambiguous "make sin objetivo explícito"; return; fi
+  if [ "$lvl" -gt 1 ]; then cl_add 5 indirect "más de un nivel de indirección al llegar a '$t'"; return; fi
+  mf=$(cl_find Makefile) || mf=$(cl_find makefile) || mf=$(cl_find GNUmakefile) || { cl_add 5 not_found "no hay Makefile"; return; }
+  cl_src "$mf"
+  cl_name_hints "$t"
+  # "R<receta>" por cada línea con tabulador del objetivo y "D<prerequisitos>" de su línea "t: deps"
+  body=$(CL_T=$t awk '
+    BEGIN { t = ENVIRON["CL_T"] }
+    /^\t/ { if (on) { r = substr($0, 2); sub(/^[@+-]+/, "", r); print "R" r }; next }
+    /^[ \t]*$/ || /^#/ { next }
+    { on = 0; i = index($0, ":")
+      if (i > 0 && substr($0, i + 1, 1) != "=" && $0 !~ /^[ \t]/) {
+        n = split(substr($0, 1, i - 1), a, /[ \t]+/)
+        for (k = 1; k <= n; k++) if (a[k] == t) on = 1
+        if (on) {
+          found = 1; d = substr($0, i + 1); sub(/#.*/, "", d)
+          if (index(d, ";")) { r = substr(d, index(d, ";") + 1); d = substr(d, 1, index(d, ";") - 1); print "R" r }
+          print "D" d
+        }
+      } }
+    END { if (!found) print "NOFOUND" }' "$mf")
+  case $body in NOFOUND*) cl_add 5 script_inexistente "el objetivo '$t' no está en ${mf##*/}"; return ;; esac
+  while IFS= read -r line; do
+    case $line in
+      D*) for d in ${line#D}; do
+            case $d in
+              .PHONY|*%*|*'$'*) cl_add 5 ambiguous "prerequisito no resoluble: $d" ;;
+              *) cl_make "$((lvl + 1))" "$d" ;;
+            esac
+          done ;;
+      R*) case ${line#R} in
+            *'$(MAKE)'*|*'${MAKE}'*) cl_add 5 indirect "receta con \$(MAKE): ${line#R}" ;;
+            *) cl_text "$((lvl + 1))" "${line#R}" ;;
+          esac ;;
+    esac
+  done <<EOF
+$body
+EOF
+}
+
+cl_shellfile() {   # cl_shellfile <depth> <ruta>
+  local lvl=$1 f=$2 line
+  if [ ! -f "$f" ]; then cl_add 5 not_found "no existe el archivo '$f'"; return; fi
+  cl_src "$f"
+  if [ "$lvl" -gt 1 ]; then cl_add 5 indirect "más de un nivel de indirección al llegar a '$f'"; return; fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    [ -n "${line//[[:space:]]/}" ] || continue
+    cl_text "$((lvl + 1))" "$line"
+  done < "$f"
+}
+
+# Una orden simple ya separada en palabras.
+cl_seg() {   # cl_seg <depth> <palabras…>
+  local lvl=$1 tool w prev="" rd a noinst=0; shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      [A-Za-z_]*=*) shift ;;
+      if|then|else|elif|while|until|do|'!'|'{'|time|nohup|command|exec|env|cross-env) shift ;;
+      *) break ;;
+    esac
+  done
+  [ $# -ge 1 ] || return 0
+  tool=${1##*/}
+  # Banderas de escritura y redirecciones a archivos, en cualquier posición.
+  for w in "$@"; do
+    w=${w#[\"\']}; w=${w%[\"\']}
+    case $w in
+      --fix|--fix=*|--write|--write=*) cl_add 3 fix_flag "$w en los argumentos" ;;
+      -w) case $tool in npm|pnpm|yarn|bun) ;; *) cl_add 3 fix_flag "-w en los argumentos" ;; esac ;;
+    esac
+    if [[ $w =~ ^[0-9]*\>\>?(.*)$ ]]; then
+      rd=${BASH_REMATCH[1]}
+      case $rd in /dev/null|\&*) rd="" ;; esac
+      [ -z "$rd" ] || cl_add 2 redirect "redirección a $rd"
+    elif [[ $prev =~ ^[0-9]*\>\>?$ ]]; then
+      case $w in /dev/null|\&*) ;; *) cl_add 2 redirect "redirección a $w" ;; esac
+    fi
+    prev=$w
+  done
+  case $tool in
+    npm|pnpm|yarn|bun) cl_pm "$lvl" "$tool" "${@:2}"; return ;;
+    npx|pnpx|bunx)
+      for a in "${@:2}"; do [ "$a" = "--no-install" ] && noinst=1; done
+      if [ "$noinst" = 0 ]; then cl_add 4 npx "$tool sin --no-install puede descargar e instalar paquetes"; return; fi
+      shift; while [ $# -gt 0 ]; do case $1 in -*) shift ;; *) break ;; esac; done
+      if [ $# -ge 1 ]; then cl_seg "$lvl" "$@"; else cl_add 5 ambiguous "npx sin comando"; fi
+      return ;;
+    make|gmake) cl_make "$lvl" "${@:2}"; return ;;
+    bash|sh|dash|zsh)
+      shift
+      case ${1:-} in
+        -c) if [ $# -ge 2 ]; then cl_text "$lvl" "$2"; else cl_add 5 ambiguous "$tool -c sin cadena"; fi; return ;;
+        -*|"") cl_add 5 ambiguous "$tool con opciones o sin archivo"; return ;;
+        *) cl_shellfile "$lvl" "$1"; return ;;
+      esac ;;
+    docker|podman)
+      case " $* " in *" push "*) cl_add 6 external "$tool push" ;; *) cl_add 5 unknown_tool "subcomando de $tool no analizado" ;; esac
+      return ;;
+    terraform|tofu|kubectl|helm)
+      case " $* " in
+        *" apply "*|*" destroy "*|*" delete "*|*" install "*|*" upgrade "*|*" rollout "*|*" patch "*)
+          cl_add 6 external "$tool modifica infraestructura" ;;
+        *) cl_add 5 unknown_tool "subcomando de $tool no analizado" ;;
+      esac
+      return ;;
+    git)
+      case ${2:-} in
+        push|fetch|pull|clone) cl_add 6 external "git $2" ;;
+        diff|status|log|show|ls-files|rev-parse|grep) cl_add 1 read_only_tool "git $2" ;;
+        *) cl_add 5 unknown_tool "git ${2:-} no analizado" ;;
+      esac
+      return ;;
+    curl|wget)
+      case " $* " in
+        *" -X POST "*|*" -X PUT "*|*" -X PATCH "*|*" -X DELETE "*|*" -XPOST "*|*" --request POST "*|*" --request PUT "*|*" --request PATCH "*|*" --request DELETE "*|*" -d "*|*" --data "*|*" --data-"*)
+          cl_add 6 external "$tool con método que escribe en un servicio" ;;
+        *) cl_add 5 unknown_tool "$tool: petición de red no analizada" ;;
+      esac
+      return ;;
+    tsc)
+      case " $* " in
+        *" --noEmit "*|*" --noemit "*) cl_add 1 read_only_tool "tsc --noEmit" ;;
+        *) cl_add 2 tsc_emit "tsc sin --noEmit puede emitir archivos" ;;
+      esac
+      for w in "$@"; do cl_word "$w" "los argumentos"; done
+      return ;;
+    prettier)
+      case " $* " in
+        *" --check "*|*" -c "*|*" --list-different "*|*" -l "*) cl_add 1 read_only_tool "prettier --check" ;;
+        *" --write "*|*" -w "*) ;;   # ya registrado como escritura de fuentes
+        *) cl_add 5 ambiguous "prettier sin --check ni --write" ;;
+      esac
+      for w in "$@"; do cl_word "$w" "los argumentos"; done
+      return ;;
+    echo|printf|cd|set|export|exit|true|false|:|test|'['|'[['|fi|done|pushd|popd|read|cat|ls|grep|head|tail|wc|diff)
+      cl_add 1 read_only_tool "$tool"; return ;;
+    eslint|jest|vitest|mocha|ava|pytest|mypy|flake8|pylint|ruff|shellcheck|stylelint|rspec|phpunit|pyright|golangci-lint|tap|playwright|cypress|biome|oxlint)
+      cl_add 1 read_only_tool "$tool"
+      for w in "${@:2}"; do cl_word "$w" "los argumentos"; done
+      return ;;
+    go|cargo)
+      cl_add 1 read_only_tool "$tool"
+      for w in "${@:2}"; do cl_word "$w" "los argumentos"; done
+      return ;;
+  esac
+  case $1 in
+    *.sh) cl_shellfile "$lvl" "$1"; return ;;
+    */*) if [ -f "$1" ]; then cl_add 5 unknown_tool "ejecutable no analizado: $1"; cl_src "$1"
+         else cl_add 5 not_found "no existe '$1'"; fi
+         return ;;
+  esac
+  case $1 in   # la orden es en sí un verbo de efecto (codegen, generate, build…)
+    codegen|generate|build|format|deploy|publish|release|migrate|seed|push) cl_word "$1" "la orden"; return ;;
+  esac
+  for w in "${@:2}"; do cl_word "$w" "los argumentos"; done
+  if command -v -- "$1" >/dev/null 2>&1; then cl_add 5 unknown_tool "herramienta no reconocida: $1"
+  else cl_add 5 not_found "no se encuentra el comando '$1'"; fi
+}
+
+qg_cmd_classify() {
+  local json=0 cls red r src first
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --json) json=1; shift ;;
+      --) shift; break ;;
+      *) qg_usage "opción desconocida para classify: $1" ;;
+    esac
+  done
+  [ $# -ge 1 ] || qg_usage "uso: qg classify [--json] -- <comando> [args…]"
+  CL_RANK=0; CL_REASONS=""; CL_SOURCE=""; CL_PKG=""; CL_PKG_STATE=""; CL_SCRIPTS=""; CL_PNPM_AUTO=""
+  cl_seg 0 "$@"
+  [ "$CL_RANK" -gt 0 ] || cl_add 5 ambiguous "no se pudo inspeccionar el comando"
+  cls=$(cl_name "$CL_RANK"); red=$(qg_redact_argv "$@")
+  if [ "$json" = 1 ]; then
+    printf '{"class":%s,"reasons":[' "$(qg_json_str "$cls")"
+    first=1
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      [ "$first" = 1 ] || printf ','
+      first=0; printf '%s' "$(qg_json_str "$r")"
+    done <<EOF
+$CL_REASONS
+EOF
+    printf '],"source":['
+    first=1
+    while IFS= read -r src; do
+      [ -n "$src" ] || continue
+      [ "$first" = 1 ] || printf ','
+      first=0; printf '%s' "$(qg_json_str "$src")"
+    done <<EOF
+$CL_SOURCE
+EOF
+    printf '],"command":%s}\n' "$(qg_json_str "$red")"
+  else
+    printf 'clase: %s\ncomando: %s\n' "$cls" "$red"
+    while IFS= read -r r; do [ -z "$r" ] || printf 'motivo: %s\n' "$r"; done <<EOF
+$CL_REASONS
+EOF
+    while IFS= read -r src; do [ -z "$src" ] || printf 'origen inspeccionado: %s\n' "$src"; done <<EOF
+$CL_SOURCE
+EOF
+  fi
+  return 0
+}
+
 # ---------------------------------------------------------------- principal
 
 qg_help() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Códigos de salida de qg status: 0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale · 5 missing
@@ -1529,6 +2013,12 @@ ausente, corrupta o fuera del repo → blocked. qg run nunca escribe la línea b
 --baseline debe envolver tsc directamente (no npm run, ni tsc && otra herramienta): cualquier línea
 que no sea de tsc → blocked. Con --baseline la salida se muestra al terminar el comando. Las rutas
 se normalizan respecto a la raíz: en monorepos, ejecuta desde la raíz o usa una línea base por paquete.
+
+Clasificación previa: qg classify -- <cmd> dice si una verificación es read-only, writes-generated,
+writes-source, installs-dependencies, external-side-effects o unknown, leyendo package.json (scripts),
+Makefile, archivos de shell, .npmrc y pnpm-workspace.yaml; no ejecuta nada. Gana la coincidencia más
+grave; lo que no se puede inspeccionar (script inexistente, indirección de más de un nivel, JSON ilegible)
+es unknown, nunca read-only. La skill lo usa en Discover; qg run no cambia.
 EOF
 }
 
@@ -1547,6 +2037,7 @@ qg_main() {
     help|-h|--help) qg_help ;;
     reject)         qg_cmd_reject "$@" ;;
     baseline)       qg_cmd_baseline "$@" ;;
+    classify)       qg_cmd_classify "$@" ;;
     session)        qg_cmd_session "$@" ;;
     hooks)          qg_cmd_hooks "$@" ;;
     version|--version) qg_cmd_version "$@" ;;
