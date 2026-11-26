@@ -444,6 +444,9 @@ qg_cmd_fingerprint() {
 #   # qg-baseline 1 format=typescript
 #   <conteo>\t<firma>            una línea por firma, ordenada por firma (LC_ALL=C)
 # Firma TypeScript: TSnnnn|<archivo relativo a la raíz, normalizado>|<mensaje con espacios colapsados>.
+# En el archivo y el mensaje, '\' y '|' se escapan como '\\' y '\|': la firma es inequívoca.
+# Las rutas se normalizan respecto a la raíz del repo: ejecuta tsc desde la raíz o usa una línea base
+# por paquete (en monorepos, dos paquetes con la misma ruta relativa no deben compartir línea base).
 # Línea y columna no entran en la firma: mover código no crea errores nuevos. Un mensaje que cambia
 # (p. ej. un tipo renombrado) cuenta como error nuevo, a propósito: mejor un FAIL que revisar que un
 # falso PASS. Solo se usa la primera línea de cada diagnóstico (las cadenas de mensajes no entran).
@@ -480,9 +483,14 @@ qg_bl_locate() {
 }
 
 # Analiza la salida de tsc. Escribe una firma por diagnóstico en $1 y define QG_TS_DIAG (diagnósticos)
-# y QG_TS_UNREC (líneas con "error TS" que no se reconocen). $2 = directorio del comando relativo a la
-# raíz (git rev-parse --show-prefix); el resto, archivos de salida. Formatos aceptados:
+# y QG_TS_UNREC (líneas no reconocidas). $2 = directorio del comando relativo a la raíz
+# (git rev-parse --show-prefix); el resto, archivos de salida. Solo se reconoce la salida de tsc:
 #   ruta(l,c): error TSnnnn: mensaje        ruta:l:c - error TSnnnn: mensaje   (--pretty, con ANSI)
+#   tras un diagnóstico: líneas con sangría >= 2 (cadenas de mensajes, información relacionada,
+#   marcos de código y subrayados de --pretty), el margen numérico de los marcos ("12 código", "...");
+#   en cualquier punto: líneas en blanco, "Found N error(s)…" y la tabla "Errors  Files".
+# Cualquier otra línea (otra herramienta, un envoltorio npm, una traza de Node) es irreconocible: la
+# salida ajena a tsc nunca se ignora, así que --baseline debe envolver tsc directamente.
 qg_ts_parse() {
   local sigs=$1 prefix=$2 ptop; shift 2
   ptop=$(cd -P -- "$QG_TOP" 2>/dev/null && pwd -P) || ptop=""
@@ -503,20 +511,34 @@ qg_ts_parse() {
       for (i = 1; i <= k; i++) out = out (i > 1 ? "/" : "") st[i]
       return out
     }
+    function esc(v,   o, c, i, n) {   # escapa \ y | (sin depender de gsub con barras: portable)
+      o = ""; n = length(v)
+      for (i = 1; i <= n; i++) { c = substr(v, i, 1); if (c == "\\" || c == "|") o = o "\\"; o = o c }
+      return o
+    }
     BEGIN { top = ENVIRON["QG_AWK_TOP"]; ptop = ENVIRON["QG_AWK_PTOP"]; prefix = ENVIRON["QG_AWK_PREFIX"]
-            u = 0; ansi = sprintf("%c", 27) "\\[[0-9;]*[A-Za-z]" }
+            u = 0; seen = 0; ansi = sprintf("%c", 27) "\\[[0-9;]*[A-Za-z]" }
     {
       l = $0
       sub(/\r$/, "", l)
       gsub(ansi, "", l)
-      if (index(l, "error TS") == 0) next
-      if (!match(l, /\([0-9]+,[0-9]+\): error TS[0-9]+: /) && !match(l, /:[0-9]+:[0-9]+ - error TS[0-9]+: /)) { u++; next }
-      path = substr(l, 1, RSTART - 1); code = substr(l, RSTART, RLENGTH); msg = substr(l, RSTART + RLENGTH)
-      sub(/^.*error TS/, "", code); sub(/: $/, "", code)
-      sub(/^[ \t]+/, "", path); path = norm(path)
-      gsub(/[ \t]+/, " ", msg); sub(/^ /, "", msg); sub(/ $/, "", msg)
-      if (path == "" || msg == "") { u++; next }
-      print "TS" code "|" path "|" msg
+      if (l ~ /^[ \t]*$/) next
+      if (index(l, "error TS") > 0) {
+        if (!match(l, /\([0-9]+,[0-9]+\): error TS[0-9]+: /) && !match(l, /:[0-9]+:[0-9]+ - error TS[0-9]+: /)) { u++; next }
+        path = substr(l, 1, RSTART - 1); code = substr(l, RSTART, RLENGTH); msg = substr(l, RSTART + RLENGTH)
+        sub(/^.*error TS/, "", code); sub(/: $/, "", code)
+        if (path ~ /^[ \t]/) { u++; next }     # un diagnóstico empieza en la columna 1
+        path = norm(path)
+        gsub(/[ \t]+/, " ", msg); sub(/^ /, "", msg); sub(/ $/, "", msg)
+        if (path == "" || msg == "") { u++; next }
+        print "TS" code "|" esc(path) "|" esc(msg)
+        seen = 1
+        next
+      }
+      if (l ~ /^Found [0-9]+ errors?( in .+)?\.?$/) next
+      if (l ~ /^Errors +Files$/) next
+      if (seen && (l ~ /^(  |\t)/ || l ~ /^ ?[0-9]+( |$)/ || l ~ /^ *\.\.\.( |$)/)) next
+      u++
     }
     END { print "#U " u }' "$@" > "$sigs.raw" || { rm -f "$sigs.raw"; return 1; }
   QG_TS_UNREC=$(sed -n '$s/^#U //p' "$sigs.raw")
@@ -535,6 +557,7 @@ qg_bl_compare() {   # <archivo de línea base (no vacío)> <firmas actuales> <ca
     BEGIN { hdr = ENVIRON["QG_AWK_HDR"]; bad = ""; seen = 0; havep = 0 }
     FNR == NR {
       if (bad != "") next
+      sub(/\r$/, "")                       # checkout con CRLF (core.autocrlf)
       if (FNR == 1) {
         if ($0 == hdr) { seen = 1; next }
         if ($0 ~ /^# qg-baseline /) bad = "UNSUPPORTED"; else bad = "CORRUPT"
@@ -578,7 +601,7 @@ qg_bl_analyze() {   # <exit> <ref> <prefijo> <base temporal> <salida>…
   fi
   if ! qg_bl_locate "$ref"; then R_baseline_reason=$QG_BL_ERR; return 0; fi
   case $rc in 0|1|2) ;; *) R_baseline_reason=exit_code_unknown; return 0 ;; esac
-  if [ "$QG_TS_UNREC" != 0 ]; then R_baseline_reason=unrecognized_output; return 0; fi
+  if [ "$QG_TS_UNREC" != 0 ]; then R_baseline_reason=unrecognized_output; return 0; fi   # antes que no_diagnostics
   if [ "$rc" != 0 ] && [ "$QG_TS_DIAG" = 0 ]; then R_baseline_reason=no_diagnostics; return 0; fi
   # Se compara una copia: el sha registrado es exactamente el del contenido comparado.
   if ! cat -- "$QG_BL_FILE" > "$tmp.base" 2>/dev/null; then R_baseline_reason=baseline_missing; return 0; fi
@@ -617,6 +640,7 @@ qg_eval_baseline() {
         return 0
       fi
       if [ "$R_baseline_format" != typescript ]; then C_result=blocked; C_reason=baseline:baseline_unsupported; return 0; fi
+      case $R_exit_code in 0|1|2) ;; *) C_result=blocked; C_reason=baseline:exit_code_unknown; return 0 ;; esac
       if qg_bl_locate "$R_baseline_ref"; then sha=$(git hash-object --no-filters -- "$QG_BL_FILE" 2>/dev/null); fi
       # La línea base cambió (o desapareció) después de la ejecución: la evidencia ya no es vigente.
       if [ -z "$sha" ] || [ "$sha" != "$R_baseline_sha" ]; then C_result=stale; C_reason=baseline:baseline_changed
@@ -645,19 +669,23 @@ qg_sig_num() { case $1 in HUP) echo 1 ;; INT) echo 2 ;; TERM) echo 15 ;; *) echo
 
 # Ejecuta "$@" sin shell intermedio, en su propio grupo de procesos, con timeout.
 # Define QG_RC, QG_TIMED_OUT, QG_SIG.
-# Con QG_CAP=<prefijo>, la salida se sigue mostrando en la terminal y además se copia (tee) en
-# <prefijo>.out y <prefijo>.err; QG_CAP_OK=1 si la copia está completa.
+# Con QG_CAP=<directorio>, stdout y stderr del comando se capturan PRIMERO en <dir>/out y <dir>/err
+# (un `cat` por flujo, cuyo exit se comprueba) y se muestran en la terminal al terminar (qg_cap_show).
+# La captura no depende del lado de la terminal: un `| head` o una terminal cerrada no la truncan.
+# QG_CAP_OK=1 solo si ambas copias terminaron con exit 0 (completas).
 qg_exec() {
   local tmo=$1 grace=$2; shift 2
   local marker wd="" cdir="" t1="" t2=""
   marker=$(mktemp "${TMPDIR:-/tmp}/qg-tmo.XXXXXX") && rm -f "$marker"
   QG_SIG=""; QG_TIMED_OUT=0; QG_CAP_OK=0
   if [ -n "${QG_CAP:-}" ]; then
-    if cdir=$(mktemp -d "${TMPDIR:-/tmp}/qg-cap.XXXXXX") && mkfifo "$cdir/o" "$cdir/e"; then
-      # Los tee ignoran las señales: terminan al cerrarse la tubería (EOF) y no pierden el final.
-      ( trap '' INT TERM HUP; exec tee "$QG_CAP.out" < "$cdir/o" ) &
+    if cdir=$(mktemp -d "${TMPDIR:-/tmp}/qg-cap.XXXXXX") && mkfifo "$cdir/o" "$cdir/e" &&
+       : > "$QG_CAP/out" && : > "$QG_CAP/err"; then
+      # Los lectores ignoran las señales: terminan al cerrarse la tubería (EOF) y no pierden el final.
+      # La FIFO se abre antes que el archivo: si el archivo fallara, el comando recibe EPIPE y no se bloquea.
+      ( trap '' INT TERM HUP; exec cat < "$cdir/o" > "$QG_CAP/out" ) &
       t1=$!
-      ( trap '' INT TERM HUP; exec tee "$QG_CAP.err" < "$cdir/e" >&2 ) &
+      ( trap '' INT TERM HUP; exec cat < "$cdir/e" > "$QG_CAP/err" ) &
       t2=$!
       QG_CAP_OK=1
     else
@@ -695,9 +723,9 @@ qg_exec() {
     kill -KILL -- "-$QG_CHILD" 2>/dev/null   # restos del grupo (nietos) tras timeout/interrupción
   fi
   if [ -n "$cdir" ]; then
-    # Espera acotada a que los tee vacíen la tubería. Si un descendiente que escapó del grupo la
+    # Espera acotada a que los lectores vacíen la tubería. Si un descendiente que escapó del grupo la
     # mantiene abierta, la copia queda incompleta (QG_CAP_OK=0) y no se usa para decidir nada.
-    local i=0
+    local i=0 s1 s2
     while [ "$i" -lt 50 ] && { kill -0 "$t1" 2>/dev/null || kill -0 "$t2" 2>/dev/null; }; do
       sleep 0.1 2>/dev/null || sleep 1
       i=$((i + 1))
@@ -706,11 +734,34 @@ qg_exec() {
       QG_CAP_OK=0
       kill -KILL "$t1" "$t2" 2>/dev/null
     fi
-    wait "$t1" "$t2" 2>/dev/null
+    # Cada lector por separado: un fallo de escritura (disco lleno, límite) invalida la captura.
+    wait "$t1" 2>/dev/null; s1=$?
+    wait "$t2" 2>/dev/null; s2=$?
+    [ "$s1" = 0 ] && [ "$s2" = 0 ] || QG_CAP_OK=0
     rm -rf "$cdir"
   fi
   trap - INT TERM HUP
   QG_CHILD=""
+}
+
+# Muestra en la terminal lo capturado (stdout → stdout, stderr → stderr). Un fallo del lado de la
+# terminal (p. ej. `| head`) solo afecta a este `cat`, nunca a la captura ni a la decisión.
+qg_cap_show() {
+  [ -n "$1" ] || return 0
+  [ -f "$1/out" ] && cat -- "$1/out" 2>/dev/null
+  [ -f "$1/err" ] && cat -- "$1/err" >&2
+  return 0
+}
+
+# Directorio temporal de captura: $QG_STATE/capture/<pid>.<aleatorio>. No usa el patrón *.tmp.*, así
+# que `qg gc` no lo toca mientras el proceso vive; gc retira los de procesos muertos (ver qg_cmd_gc).
+qg_cap_dir() {
+  local d="$QG_STATE/capture"
+  [ -L "$d" ] && qg_die "$EX_STATE" "'$d' es un enlace simbólico; se rechaza"
+  [ -d "$d" ] || mkdir "$d" 2>/dev/null || [ -d "$d" ] || qg_die "$EX_STATE" "no se pudo crear '$d'"
+  d="$d/$$.$RANDOM$RANDOM"
+  mkdir "$d" || qg_die "$EX_STATE" "no se pudo crear '$d'"
+  printf '%s' "$d"
 }
 
 # shellcheck disable=SC2034  # las variables R_* se leen por expansión indirecta en qg_record_body
@@ -762,9 +813,9 @@ qg_cmd_run() {
   if [ $bl_set = 1 ]; then
     R_baseline_ref=$bl_ref; R_baseline_format=$bl_fmt
     prefix=$(git rev-parse --show-prefix 2>/dev/null) || prefix=""
-    cap="$QG_STATE/capture.tmp.$$.$RANDOM"   # temporal (qg gc retira los abandonados)
   fi
   local rec; rec=$(qg_record_create "$dir") || exit "$EX_STATE"
+  [ $bl_set = 1 ] && cap=$(qg_cap_dir)
 
   # Resolver el ejecutable sin shell: solo programas externos (sin funciones ni builtins).
   local err=""
@@ -802,9 +853,8 @@ qg_cmd_run() {
     elif [ "$QG_CAP_OK" != 1 ]; then
       R_baseline_result=inconclusive; R_baseline_reason=capture_failed
     else
-      qg_bl_analyze "$rc" "$bl_ref" "$prefix" "$cap" "$cap.out" "$cap.err"
+      qg_bl_analyze "$rc" "$bl_ref" "$prefix" "$cap/w" "$cap/out" "$cap/err"
     fi
-    rm -f "$cap.out" "$cap.err" "$cap.sig" "$cap.sig.raw" "$cap.base" "$cap.cmp"
     # Solo se conservan las firmas nuevas (nunca la salida cruda), junto al registro.
     if [ -n "$QG_BL_NEW" ]; then
       qg_atomic_write "$rec.new" "$QG_BL_NEW" || qg_err "aviso: no se pudieron guardar las firmas nuevas"
@@ -818,7 +868,8 @@ qg_cmd_run() {
   fi
   R_finished_epoch=$(qg_now_epoch); R_finished_at=$(qg_now_iso)
   R_duration_s=$((R_finished_epoch - R_started_epoch))
-  qg_atomic_write "$rec" "$(qg_record_body)" || qg_die "$EX_STATE" "no se pudo escribir el registro final"
+  qg_atomic_write "$rec" "$(qg_record_body)" || { [ -n "$cap" ] && rm -rf "$cap"; qg_die "$EX_STATE" "no se pudo escribir el registro final"; }
+  if [ -n "$cap" ]; then qg_cap_show "$cap"; rm -rf "$cap"; fi
 
   local note="vigente"
   [ "$R_changed_during_run" = 1 ] && note="OBSOLETA: el contenido cambió durante la ejecución"
@@ -1126,6 +1177,17 @@ EOF
       [ -f "$f" ] && [ ! -e "${f%.new}" ] && rm -f "$f"
     done
   done
+  # capturas de `run --baseline`/`baseline write` cuyo proceso ya no existe (y con más de 60 min, por si
+  # el estado se comparte entre máquinas): las de un proceso vivo nunca se tocan.
+  local c_n=0
+  if [ -d "$QG_STATE/capture" ] && [ ! -L "$QG_STATE/capture" ]; then
+    for d in "$QG_STATE/capture"/*; do
+      [ -d "$d" ] && [ ! -L "$d" ] || continue
+      n=${d##*/}; n=${n%%.*}
+      qg_is_uint "$n" && kill -0 "$n" 2>/dev/null && continue
+      [ -n "$(find "$d" -maxdepth 0 -mmin +60 2>/dev/null)" ] && rm -rf "$d" && c_n=$((c_n + 1))
+    done
+  fi
   # sesiones sin actividad desde hace más de QG_SESSION_DAYS días (30 por defecto)
   local s_n=0
   if [ -d "$QG_STATE/sessions" ] && [ ! -L "$QG_STATE/sessions" ]; then
@@ -1138,7 +1200,7 @@ EOF
     done
   fi
   qg_unlock
-  qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n sesiones=$s_n"
+  qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n sesiones=$s_n capturas=$c_n"
 }
 
 # ---------------------------------------------------------------- qg baseline
@@ -1181,14 +1243,16 @@ qg_cmd_baseline() {
     */*) [ -f "$1" ] && [ -x "$1" ] || qg_die 127 "'$1': no existe o no es ejecutable; no se ejecutó nada" ;;
     *)   type -P "$1" >/dev/null 2>&1 || qg_die 127 "'$1': comando no encontrado; no se ejecutó nada" ;;
   esac
-  local cap="$QG_STATE/capture.tmp.$$.$RANDOM" rc why="" prefix
+  local cap rc why="" prefix
+  cap=$(qg_cap_dir)
   prefix=$(git rev-parse --show-prefix 2>/dev/null) || prefix=""
   QG_CAP=$cap qg_exec "$timeout" "$grace" "$@"
   rc=$QG_RC
+  qg_cap_show "$cap"
   if [ -n "$QG_SIG" ]; then why="interrumpido por $QG_SIG"
   elif [ "$QG_TIMED_OUT" = 1 ]; then why="superó el timeout (${timeout}s)"
   elif [ "$QG_CAP_OK" != 1 ]; then why="no se pudo capturar la salida completa"
-  elif ! qg_ts_parse "$cap.sig" "$prefix" "$cap.out" "$cap.err"; then why="no se pudo analizar la salida"
+  elif ! qg_ts_parse "$cap/w.sig" "$prefix" "$cap/out" "$cap/err"; then why="no se pudo analizar la salida"
   else
     case $rc in 0|1|2) ;; *) why="exit $rc fuera de los conocidos de tsc {0,1,2}" ;; esac
     [ -z "$why" ] && [ "$QG_TS_UNREC" != 0 ] && why="$QG_TS_UNREC línea(s) con 'error TS' no reconocidas"
@@ -1196,11 +1260,11 @@ qg_cmd_baseline() {
   fi
   local body="" tab=$'\t' n_sig=0
   if [ -z "$why" ]; then
-    body=$(LC_ALL=C awk '{ c[$0]++ } END { for (k in c) print c[k] "\t" k }' "$cap.sig" | LC_ALL=C sort -t "$tab" -k 2)
+    body=$(LC_ALL=C awk '{ c[$0]++ } END { for (k in c) print c[k] "\t" k }' "$cap/w.sig" | LC_ALL=C sort -t "$tab" -k 2)
     [ -n "$body" ] && n_sig=$(printf '%s\n' "$body" | wc -l | tr -d ' ')
   fi
   local n_diag=${QG_TS_DIAG:-0}
-  rm -f "$cap.out" "$cap.err" "$cap.sig" "$cap.sig.raw"
+  rm -rf "$cap"
   [ -z "$why" ] || qg_die "$EX_STATE" "no se escribe la línea base: $why"
   if [ -e "$dest" ] && [ $replace = 0 ]; then qg_die "$EX_STATE" "'$outp' apareció durante la ejecución; no se sobrescribe"; fi
   local tmp="$dest.tmp.$$.$RANDOM"
@@ -1462,6 +1526,9 @@ Líneas base (errores heredados): con --baseline, qg compara las firmas de los d
 el total. El check pasa solo si no hay diagnósticos nuevos (status lo marca baseline:known=K,fixed=F);
 el exit real del comando se conserva. Salida irreconocible, exit fuera de {0,1,2} o línea base
 ausente, corrupta o fuera del repo → blocked. qg run nunca escribe la línea base: usa qg baseline write.
+--baseline debe envolver tsc directamente (no npm run, ni tsc && otra herramienta): cualquier línea
+que no sea de tsc → blocked. Con --baseline la salida se muestra al terminar el comando. Las rutas
+se normalizan respecto a la raíz: en monorepos, ejecuta desde la raíz o usa una línea base por paquete.
 EOF
 }
 

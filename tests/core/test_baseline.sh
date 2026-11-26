@@ -160,9 +160,22 @@ assert_match "$(check_json "$R" tipos)" '"reason":"baseline:unrecognized_output"
 rc=$(run_bl "$R" tipos "$OUT/global" 1)
 assert_eq "$(status_rc "$R" --require tipos)" 2 "diagnóstico sin archivo: blocked"
 # exit ≠ 0 sin diagnósticos → blocked
-printf 'Algo salió mal y no hay diagnósticos.\n' > "$OUT/sin-diag"
+: > "$OUT/sin-diag"
 rc=$(run_bl "$R" tipos "$OUT/sin-diag" 1)
 assert_match "$(check_json "$R" tipos)" '"result":"blocked","reason":"baseline:no_diagnostics"' "exit≠0 sin diagnósticos: blocked"
+# Solo se reconoce la salida de tsc: cualquier otra línea → blocked (--baseline envuelve tsc directamente)
+printf 'Algo salió mal y no hay diagnósticos.\n' > "$OUT/texto"
+rc=$(run_bl "$R" tipos "$OUT/texto" 1)
+assert_match "$(check_json "$R" tipos)" '"result":"blocked","reason":"baseline:unrecognized_output"' "texto ajeno sin diagnósticos: blocked"
+{ gen 1 238; printf ' RUN  v1.6.0 /repo\n\n ✓ src/a.test.ts (3 tests) 5ms\n'; } > "$OUT/vitest"
+rc=$(run_bl "$R" tipos "$OUT/vitest" 1)
+assert_match "$(check_json "$R" tipos)" '"result":"blocked","reason":"baseline:unrecognized_output"' "salida de otra herramienta (tipo vitest) tras tsc: blocked"
+{ gen 1 238; printf '/repo/node_modules/typescript/lib/tsc.js:120\n        throw e;\n        ^\n\nError: boom\n    at Object.<anonymous> (/repo/x.js:1:1)\n'; } > "$OUT/node-crash"
+rc=$(run_bl "$R" tipos "$OUT/node-crash" 1)
+assert_match "$(check_json "$R" tipos)" '"result":"blocked","reason":"baseline:unrecognized_output"' "traza de Node tras los diagnósticos: blocked"
+{ printf '\n> pkg@1.0.0 check\n> tsc --noEmit\n\n'; gen 1 238; } > "$OUT/npm"
+rc=$(run_bl "$R" tipos "$OUT/npm" 2)
+assert_match "$(check_json "$R" tipos)" '"result":"blocked","reason":"baseline:unrecognized_output"' "envoltorio npm run: blocked"
 # diagnósticos en stderr también cuentan
 : > "$OUT/vacio"
 rc=$(qg -C "$R" run --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$OUT/vacio" 2 "$OUT/base238" >/dev/null 2>&1; echo $?)
@@ -253,6 +266,64 @@ assert_eq "$(status_rc "$R8" --require tipos)" 0 "parser: formato cruzado y ruta
 sed 's#src/##' "$OUT/otro-formato" > "$OUT/desde-src"
 qg -C "$R8/src" run --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$OUT/desde-src" 2 >/dev/null 2>&1
 assert_eq "$(field "$(last_record "$R8" tipos)" baseline_result)" passed "parser: rutas relativas al cwd se normalizan al repo"
+
+# --- salida --pretty real (marcos de código, info relacionada, resumen y tabla) → se analiza
+R10=$(new_repo); printf 'x\n' > "$R10/x"; commit_all "$R10" b
+qg -C "$R10" baseline write --format typescript --output tipos.baseline -- "$TSC" "$CORE_DIR/fixtures/baseline/salida-pretty.txt" 2 >/dev/null 2>&1
+assert_eq "$(sed 1d "$R10/tipos.baseline" | cut -f2 | tr '\n' ' ')" "TS2304|src/b.ts|Cannot find name 'foo'. TS2322|src/a.ts|Type 'string' is not assignable to type 'number'. " "pretty real: 2 firmas"
+commit_all "$R10" linea-base
+qg -C "$R10" run --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$CORE_DIR/fixtures/baseline/salida-pretty.txt" 2 >/dev/null 2>&1
+assert_eq "$(status_rc "$R10" --require tipos)" 0 "pretty real: passed"
+
+# --- separador: '|' y '\' en ruta o mensaje se escapan (firma inequívoca)
+printf 'src/a|b.ts(1,1): error TS1005: x\n' > "$OUT/sep1"
+printf 'src/a.ts(1,1): error TS1005: b.ts|x\n' > "$OUT/sep2"
+R11=$(new_repo); printf 'x\n' > "$R11/x"; commit_all "$R11" b
+qg -C "$R11" baseline write --format typescript --output tipos.baseline -- "$TSC" "$OUT/sep1" 2 >/dev/null 2>&1
+assert_eq "$(sed 1d "$R11/tipos.baseline")" "$(printf '1\tTS1005|src/a\\|b.ts|x')" "separador: '|' escapado en la ruta"
+commit_all "$R11" linea-base
+rc=$(run_bl "$R11" tipos "$OUT/sep2" 2)
+assert_eq "$(field "$(last_record "$R11" tipos)" baseline_result)" failed "separador: ruta y mensaje distintos no colisionan"
+
+# --- línea base con CRLF (checkout con autocrlf) se acepta
+R12=$(new_repo); printf 'x\n' > "$R12/x"; commit_all "$R12" b
+qg -C "$R12" baseline write --format typescript --output tipos.baseline -- "$TSC" "$OUT/base238" 2 >/dev/null 2>&1
+sed 's/$/\r/' "$R12/tipos.baseline" > "$R12/crlf" && mv "$R12/crlf" "$R12/tipos.baseline"; commit_all "$R12" crlf
+rc=$(run_bl "$R12" tipos "$OUT/base238" 2)
+assert_eq "$(status_rc "$R12" --require tipos)" 0 "CRLF: la línea base se lee igual"
+
+# --- captura completa aunque el lado de la terminal se cierre (| head) o falle la escritura
+R13=$(new_repo); printf 'x\n' > "$R13/x"; commit_all "$R13" b
+gen 1 3000 > "$OUT/grande"
+qg -C "$R13" baseline write --format typescript --output tipos.baseline -- "$TSC" "$OUT/grande" 2 2>/dev/null | head -c 1 >/dev/null
+assert_eq "$(sed 1d "$R13/tipos.baseline" | awk -F '\t' '{s += $1} END {print s}')" 3000 "write | head: línea base completa"
+commit_all "$R13" linea-base
+{ gen 1 3000; printf 'src/z.ts(1,1): error TS9999: nuevo al final.\n'; } > "$OUT/grande-nuevo"
+qg -C "$R13" run --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$OUT/grande-nuevo" 2 2>/dev/null | head -c 1 >/dev/null
+REC=$(last_record "$R13" tipos)
+assert_eq "$(field "$REC" baseline_result)" failed "run | head: el error nuevo del final se detecta"
+assert_eq "$(field "$REC" baseline_new)" 1 "run | head: new=1"
+assert_eq "$(field "$REC" exit_code)" 2 "run | head: exit real"
+( ulimit -f 16; qg -C "$R13" run --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$OUT/grande" 2 >/dev/null 2>&1 )
+assert_match "$(check_json "$R13" tipos)" '"result":"blocked","reason":"baseline:capture_failed"' "fallo al escribir la captura: blocked capture_failed"
+E=$( ( ulimit -f 16; qg -C "$R13" baseline write --replace --format typescript --output tipos.baseline -- "$TSC" "$OUT/base238" 2 2>&1 >/dev/null ); echo "rc=$?")
+assert_match "$E" 'capturar.*rc=65' "write con fallo de captura: se niega (65)"
+assert_eq "$(sed 1d "$R13/tipos.baseline" | awk -F '\t' '{s += $1} END {print s}')" 3000 "write con fallo de captura: archivo intacto"
+assert_eq "$(find "$(state_dir "$R13")" -path '*capture*' -type f | wc -l | tr -d ' ')" 0 "captura: sin temporales tras fallos"
+
+# --- qg gc durante una ejecución larga no toca la captura; sí retira la de un proceso muerto
+printf '#!/bin/sh\ncat "$1"; sleep 2; exit 2\n' > "$TESTS_TMP/tsc-lento"; chmod +x "$TESTS_TMP/tsc-lento"
+qg -C "$R13" run --baseline tipos.baseline --baseline-format typescript tipos -- "$TESTS_TMP/tsc-lento" "$OUT/grande" >/dev/null 2>&1 &
+QPID=$!
+sleep 1
+CAPD=$(state_dir "$R13")/capture
+find "$CAPD" -exec touch -t 200001010000 {} + 2>/dev/null   # aparenta ser antigua
+qg -C "$R13" gc 2>/dev/null
+wait "$QPID"
+assert_eq "$(field "$(last_record "$R13" tipos)" baseline_result)" passed "gc durante la ejecución: la captura sigue completa"
+mkdir -p "$CAPD/999999999.1"; : > "$CAPD/999999999.1/out"; touch -t 200001010000 "$CAPD/999999999.1"
+qg -C "$R13" gc 2>/dev/null
+assert_file_absent "$CAPD/999999999.1" "gc: retira la captura abandonada de un proceso muerto"
 
 # --- baseline write: se niega a sobrescribir sin --replace; se niega con salida irreconocible
 qg -C "$R" baseline write --format typescript --output tipos.baseline -- "$TSC" "$OUT/baja" 2 >/dev/null 2>&1; rc=$?
