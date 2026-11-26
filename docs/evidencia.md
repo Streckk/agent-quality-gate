@@ -204,8 +204,8 @@ Códigos de salida: `0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale
 ## 4a. Líneas base de errores heredados (`--baseline`, `qg baseline write`)
 
 ```text
-qg run --baseline <ruta> --baseline-format typescript <check-id> -- npx tsc --noEmit
-qg baseline write --format typescript --output <ruta> [--replace] -- npx tsc --noEmit
+qg run --baseline <ruta> --baseline-format typescript <check-id> -- node_modules/.bin/tsc --noEmit
+qg baseline write --format typescript --output <ruta> [--replace] -- node_modules/.bin/tsc --noEmit
 ```
 
 Para repos con errores de TypeScript preexistentes. La línea base es un archivo de texto versionable con las **firmas** de los diagnósticos (`TSnnnn|archivo|mensaje`, sin línea ni columna), con su conteo. `qg run --baseline` las compara como **multiconjunto**, nunca por el total: el check pasa solo si no hay diagnósticos nuevos. Que desaparezcan 2 y aparezcan 2 nuevos es `failed`.

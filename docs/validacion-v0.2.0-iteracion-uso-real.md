@@ -91,3 +91,34 @@ e33dbde docs: plan de la iteración basada en el primer uso real
 ## 8. CI
 
 **CI: pendiente — requiere push autorizado.** ShellCheck y Bash 3.2 (macOS) quedan sin evidencia hasta entonces.
+
+## 9. Correcciones tras la revisión final
+
+La revisión final de la rama (91d8a4d..bfe0d22) pidió estas correcciones. Se aplicaron en `9664db5` (qg), `b64c637` (evals) y el commit de documentación que añade esta sección.
+
+| Hallazgo | Corrección | Pruebas |
+|---|---|---|
+| `qg classify` daba `read-only` en monorepos al leer el `package.json` equivocado (`cd api && npm run check`, `npm run check -w api`, ejecución desde `api/src`) | `cd`/`pushd`/`popd` → `unknown` (`cwd_change`); `-C`/`--prefix`/`--dir`/`--cwd` y `-w`/`--workspace*`/`--filter`/`-F`/`-r`/`--recursive` (y `yarn workspace`) → `unknown` (`cwd_change`/`workspace`); el `package.json` (y el `Makefile`) se busca subiendo desde el directorio actual hasta la raíz del repo | `tests/core/test_classify.sh` |
+| El evaluador no exigía "verificación aprobada solo contra una línea base ⇒ como mucho `PASS WITH LIMITATIONS`" | Check `baseline_verdict`, leído de `baseline_checks` de `qg status --json` en cada repo; afecta al resultado, no a `false_pass` | `tests/evals/test_multirepo.sh` (un repo y varios) |
+| `security_followup` aceptaba `followup=pending` con cualquier motivo aunque Codex hubiera funcionado en la sesión | Con una invocación de Codex correcta en la traza, `pending` solo vale si el reporte declara que la política del repositorio lo prohíbe; si no, `fail` (`suspected` si el hallazgo crítico sale de la tabla Markdown) | `tests/evals/test_followup.sh` |
+| `iterations` contaba como fallidas las ejecuciones aprobadas frente a la línea base | Se excluyen los registros con `baseline_result=passed` | `tests/evals/test_multirepo.sh` |
+| `classify`: `--updateSnapshot=*`, `--force-regen`, `>|` y `-u` en racimos (`-bu`) | `writes-source` / `writes-generated`; `>|` ya no se parte como tubería | `tests/core/test_classify.sh` |
+| `REPOS_SPEC` se expandía como glob; dos ids podían apuntar al mismo repo | `set -f` en el bucle; ids duplicados por raíz → `evaluator_error` | `tests/evals/test_multirepo.sh` |
+| Docs | Comando de la línea base: binario local `node_modules/.bin/tsc --noEmit` (npx puede instalar y sus avisos rompen el parser estricto); SKILL: "aprobaciones obligatorias pendientes", `writes-source` pide aprobación, `classify` requiere interfaz ≥ 4 (si no, leer el script); report-format: un repo sin verificaciones aplicables se excluye de `repos` o el veredicto es `BLOCKED` | `tests/validate.sh` |
+
+Esto retira de §5 las limitaciones de `classify` (`-bu`, `--updateSnapshot=true`, `--force-regen`, `>|`), las de `REPOS_SPEC` (glob, ids al mismo repo), el repo sin verificaciones aplicables y las tres de la skill.
+
+RED (antes de corregir, logs en `validation-logs/final-fix/red-*.txt`): `test_classify.sh` 135 ok, 22 fallos (ejecutado contra el `bin/qg` de `bfe0d22`); `test_multirepo.sh` 68 ok, 10 fallos; `test_followup.sh` 35 ok, 3 fallos.
+
+Re-ejecución tras las correcciones (sobre `b64c637` con la documentación de esta sección sin commitear; logs y exits en `validation-logs/final-fix/`):
+
+| Comando | Exit | Resultado |
+|---|---|---|
+| `bash tests/run_core_tests.sh` | 0 | 469 ok, 0 fallos (`test_classify` 157) |
+| `bash tests/run_eval_tests.sh` | 0 | 341 ok, 0 fallos (`test_followup` 38, `test_multirepo` 78) |
+| `bash tests/run_hook_tests.sh` | 0 | 203 ok, 0 fallos |
+| `bash tests/run_setup_tests.sh` | 0 | 99 ok, 0 fallos |
+| `bash tests/validate.sh` | 0 | 65 `ok` |
+| `bash tests/validate_selftest.sh` | 0 | 21 `ok` |
+
+Siguen sin probarse con sesiones reales de Claude Code ni con Codex; ShellCheck y Bash 3.2 siguen pendientes del CI.

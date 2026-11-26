@@ -90,7 +90,7 @@ checks:
     required: false
     needs: [docker]            # requisitos de entorno; si faltan → blocked
   - id: typecheck
-    run: npx tsc --noEmit      # con baseline, el comando debe ser tsc directo
+    run: node_modules/.bin/tsc --noEmit   # con baseline: tsc directo y binario local (no npx; evidence-qg §4a)
     required: true
     baseline:                  # errores heredados; ver evidence-qg §4a
       format: typescript       # único formato admitido

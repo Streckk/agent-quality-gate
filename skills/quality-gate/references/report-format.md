@@ -16,7 +16,7 @@ El reporte es la salida verificable de la puerta. Debe poder auditarse: cada `pa
 | id | comando | estado | exit | evidencia | obligatoria |
 |----|---------|--------|------|-----------|-------------|
 | lint | `pnpm lint` | passed | 0 | 0 warnings | sí |
-| typecheck | `npx tsc --noEmit` | passed (línea base: 236 conocidos, 2 corregidos) | 2 | sin diagnósticos nuevos | sí |
+| typecheck | `node_modules/.bin/tsc --noEmit` | passed (línea base: 236 conocidos, 2 corregidos) | 2 | sin diagnósticos nuevos | sí |
 | unit | `pnpm test -- --run` | failed | 1 | 2/148 fallan: auth.spec.ts | sí |
 | e2e | `pnpm e2e` | blocked | — | docker no disponible | no |
 | build | — | skipped | — | riesgo low, sin cambios de build | no |
@@ -92,7 +92,7 @@ En el Markdown, una tabla por repo bajo un encabezado con el mismo `id`:
 ### Verificaciones — web
 | id | comando | estado | exit | evidencia | obligatoria |
 |----|---------|--------|------|-----------|-------------|
-| typecheck | `npx tsc --noEmit` | passed (línea base: 12 conocidos, 0 corregidos) | 2 | sin diagnósticos nuevos | sí |
+| typecheck | `node_modules/.bin/tsc --noEmit` | passed (línea base: 12 conocidos, 0 corregidos) | 2 | sin diagnósticos nuevos | sí |
 ```
 
 Con dos repos, `qg status --run-id <ID> --json` se consulta **en cada uno** (`qg -C <repo> status …`); la huella y el `status` de cada `evidence` son los de su repo.
@@ -144,6 +144,7 @@ Evalúa las condiciones **en este orden**; el primer veredicto que aplique es el
 | 5 | `PASS` | todas las obligatorias `passed`, sin hallazgos `confirmed` abiertos y sin limitaciones relevantes |
 
 - Con varios repositorios, el veredicto es el del **peor** repo: uno `failed` da `FAIL`; uno `blocked`, `incomplete`, `stale` o `missing` impide `PASS` y `PASS WITH LIMITATIONS`. Nunca un `PASS` global por mirar solo el primero.
+- Un repositorio **sin verificaciones aplicables** (por ejemplo, solo documentación, o un repo hermano que el cambio no toca) no se lista en `repos`: queda fuera del alcance y se dice en "Omitido y limitaciones". Si forma parte del alcance y no se puede verificar, su `status` es `missing` y el veredicto es `BLOCKED` (o `NOT VERIFIED` si solo se pidió Discover). Nunca se lista con `missing` junto a un `PASS`.
 - Una verificación que pasó contra una línea base nunca da `PASS` limpio: máximo `PASS WITH LIMITATIONS`. Y no es una forma de aprobar errores nuevos: con diagnósticos nuevos el check es `failed`.
 - Una aprobación obligatoria pendiente da `BLOCKED`; una opcional (`pending_optional`) no cambia el veredicto.
 - Si no existe ninguna verificación aplicable y el riesgo es `medium` o `high`: `BLOCKED` (falta evidencia para un cambio que la necesita).

@@ -6,28 +6,30 @@ En los comandos, `qg` representa la ruta absoluta resuelta una vez por la skill 
 
 ## 1. Proyecto TypeScript con errores heredados
 
-`npx tsc --noEmit` falla con 236 errores que ya existían. La puerta no puede darlos por buenos ni arreglarlos todos en un cambio pequeño. Si el equipo decide convivir con ellos, se declara una línea base en `.agent/verification.yaml` (ver [examples/nodejs/verification.yaml](../examples/nodejs/verification.yaml)):
+`node_modules/.bin/tsc --noEmit` falla con 236 errores que ya existían. La puerta no puede darlos por buenos ni arreglarlos todos en un cambio pequeño. Si el equipo decide convivir con ellos, se declara una línea base en `.agent/verification.yaml` (ver [examples/nodejs/verification.yaml](../examples/nodejs/verification.yaml)):
 
 ```yaml
 checks:
   - id: typecheck
-    run: npx tsc --noEmit
+    run: node_modules/.bin/tsc --noEmit
     required: true
     baseline:
       format: typescript
       reference: .agent/baselines/typecheck.txt
 ```
 
+El comando es el binario local de `tsc`, no `npx tsc`: `npx` puede instalar paquetes, y sus avisos (`npm warn …`) no son líneas de `tsc`, así que el parser estricto de la línea base daría `blocked`.
+
 **La línea base la crea el usuario, no la skill.** Solo si lo pides expresamente:
 
 ```bash
-qg baseline write --format typescript --output .agent/baselines/typecheck.txt -- npx tsc --noEmit
+qg baseline write --format typescript --output .agent/baselines/typecheck.txt -- node_modules/.bin/tsc --noEmit
 ```
 
-Con la línea base presente, la skill ejecuta `qg run --baseline … typecheck -- npx tsc --noEmit`. Los errores conocidos no cuentan; uno nuevo hace fallar el check, aunque el total no suba. Si tu cambio corrige 3 errores heredados, el reporte lo refleja:
+Con la línea base presente, la skill ejecuta `qg run --baseline … typecheck -- node_modules/.bin/tsc --noEmit`. Los errores conocidos no cuentan; uno nuevo hace fallar el check, aunque el total no suba. Si tu cambio corrige 3 errores heredados, el reporte lo refleja:
 
 ```text
-| typecheck | `npx tsc --noEmit` | passed (línea base: 233 conocidos, 3 corregidos) | 2 | sin diagnósticos nuevos | sí |
+| typecheck | `node_modules/.bin/tsc --noEmit` | passed (línea base: 233 conocidos, 3 corregidos) | 2 | sin diagnósticos nuevos | sí |
 ```
 
 Veredicto: `PASS WITH LIMITATIONS` como máximo, con "236 errores de TypeScript heredados" en las limitaciones. Si el comando es un script (`npm run typecheck`) o encadena otra herramienta, `qg` lo rechaza (`blocked`): hay que darle `tsc` directo.

@@ -11,10 +11,11 @@ checks:
     run: pnpm typecheck
     required: true
   # Proyecto con errores de TypeScript heredados: la línea base la crea el usuario
-  # (qg baseline write --format typescript --output .agent/baselines/typecheck.txt -- npx tsc --noEmit).
-  # Con baseline, el comando debe ser tsc directo, no un script que lo envuelva.
+  # (qg baseline write --format typescript --output .agent/baselines/typecheck.txt -- node_modules/.bin/tsc --noEmit).
+  # Con baseline, el comando debe ser tsc directo, no un script que lo envuelva, y el binario local:
+  # npx puede instalar paquetes y sus avisos (npm warn …) rompen el parser estricto (→ blocked).
   - id: typecheck-legacy
-    run: npx tsc --noEmit
+    run: node_modules/.bin/tsc --noEmit
     required: false
     baseline:
       format: typescript

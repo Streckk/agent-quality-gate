@@ -79,11 +79,12 @@ Exit code de `qg run` → clasificación provisional:
 Para proyectos con errores de TypeScript que ya existían: la línea base los registra y `qg` los compara después, de forma que solo los **nuevos** hacen fallar la verificación.
 
 ```bash
-"$QG" -C <dir> run --run-id <ID> --baseline .agent/baselines/typecheck.txt --baseline-format typescript typecheck -- npx tsc --noEmit
+"$QG" -C <dir> run --run-id <ID> --baseline .agent/baselines/typecheck.txt --baseline-format typescript typecheck -- node_modules/.bin/tsc --noEmit
 ```
 
 - Se usa cuando `.agent/verification.yaml` declara `baseline: {format: typescript, reference: <ruta>}` en esa verificación. Sin esa declaración no inventes una línea base.
 - **Debe envolver `tsc` directamente.** No `npm run typecheck`, ni `tsc && otra-herramienta`: cualquier línea que no sea de `tsc` da `blocked`. Si el script del proyecto envuelve más cosas, pide al usuario el comando directo.
+- Usa el binario local (`node_modules/.bin/tsc --noEmit`), no `npx`: `npx` puede descargar e instalar paquetes (y `qg classify` lo clasifica como `installs-dependencies`), y sus avisos (`npm warn …`) son líneas que no son de `tsc`, así que el parser estricto da `blocked`. No añadas flags que el proyecto no use.
 - Compara las firmas `TSnnnn|archivo|mensaje` (sin línea ni columna) como multiconjunto, **nunca por el total**: si desaparecen 2 errores conocidos y aparecen 2 nuevos, es `failed`. Pasa solo si no hay diagnósticos nuevos.
 - Es un parser estricto: formato irreconocible, diagnósticos globales sin archivo, exit fuera de {0, 1, 2}, exit ≠ 0 sin diagnósticos, o línea base ausente, corrupta o fuera del repo → `blocked`, nunca `passed`.
 - El exit real del comando se conserva en `qg run` y en el registro. Que "pasó contra la línea base" se distingue en `qg status` (`baseline:known=K,fixed=F` y, en `--json`, el objeto `baseline` y la lista `baseline_checks`).
@@ -95,7 +96,7 @@ Para proyectos con errores de TypeScript que ya existían: la línea base los re
 - **`qg run` nunca escribe la línea base.** Crearla o actualizarla es **solo a pedido explícito del usuario**:
 
 ```bash
-"$QG" -C <dir> baseline write --format typescript --output .agent/baselines/typecheck.txt [--replace] -- npx tsc --noEmit
+"$QG" -C <dir> baseline write --format typescript --output .agent/baselines/typecheck.txt [--replace] -- node_modules/.bin/tsc --noEmit
 ```
 
   Se niega sobre un archivo existente sin `--replace`, y ante salida irreconocible o exit inesperado. Actualizar la línea base para que un check pase es esconder una regresión: no lo hagas por iniciativa propia.
@@ -120,7 +121,8 @@ No ejecuta nada: lee `package.json` (scripts), `Makefile`, archivos de shell, `.
 | `unknown` | no es `read-only`: lee el script. Con indicios externos, pedir aprobación |
 
 - Gana la coincidencia más grave. Lo que no se puede inspeccionar (script inexistente, más de un nivel de indirección, JSON ilegible) es `unknown`, nunca `read-only`.
-- **Es una heurística.** Quedan falsos `read-only` conocidos (por ejemplo flags agrupados como `-bu` o `--updateSnapshot=true` en algunas herramientas). `qg run` sigue detectando los cambios durante la ejecución (`changed_during_run`), pero es tarde: léelo como una ayuda para decidir antes, no como una garantía.
+- Monorepos: un `cd`/`pushd`/`popd` dentro del comando o del script, o un gestor con `-C`/`--prefix`/`--dir`/`--cwd` o `-w`/`--workspace*`/`--filter`/`-F`/`-r`, dan `unknown` (`cwd_change` / `workspace`): el script real no es el del `package.json` leído. Sin esas opciones se usa el `package.json` más cercano subiendo desde el directorio actual hasta la raíz del repo. Para clasificar el script de un paquete, ejecuta `classify` con `-C <paquete>`.
+- **Es una heurística.** Puede haber falsos `read-only` en herramientas o flags que no conoce. `qg run` sigue detectando los cambios durante la ejecución (`changed_during_run`), pero es tarde: léelo como una ayuda para decidir antes, no como una garantía.
 - Para evitar instalaciones implícitas, usa las formas que el propio gestor documente (p. ej. una opción para no instalar al ejecutar scripts), solo si existen en su documentación; no inventes flags.
 
 ## 4c. Transparencia de caché
