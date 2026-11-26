@@ -44,6 +44,8 @@ Reglas:
 - Si dudas de que un comando sea seguro (scripts con `deploy`, `migrate`, `seed`, `publish`, `release`, acceso a red o a datos reales), **no lo ejecutes**: márcalo `skipped` y explícalo. Lee el script antes si hace falta.
 - Comandos que requieren servicios externos (BD, docker, credenciales) → solo si el entorno ya los tiene y el usuario lo autoriza; si no, `blocked`.
 
+**Efectos secundarios (con `qg`):** pasa cada candidata por `qg classify -- <comando>` ([evidence-qg](evidence-qg.md) §4b) y anota la clase en la tabla de verificaciones (`read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects`, `unknown`). Las clases `installs-dependencies`, `external-side-effects` y `unknown` con indicios externos piden aprobación antes de ejecutar. Para evitar instalaciones implícitas, usa las formas que el propio gestor documente y solo si existen; no inventes flags. Sin `qg`, lee el script y aplica el mismo criterio.
+
 Clasifica cada verificación como **obligatoria** (CI la exige, la config la marca `required`, o es lint/tipos/tests del área afectada) u **opcional**.
 
 ## 4. Integraciones opcionales
@@ -87,6 +89,12 @@ checks:
     run: pnpm e2e
     required: false
     needs: [docker]            # requisitos de entorno; si faltan → blocked
+  - id: typecheck
+    run: npx tsc --noEmit      # con baseline, el comando debe ser tsc directo
+    required: true
+    baseline:                  # errores heredados; ver evidence-qg §4a
+      format: typescript       # único formato admitido
+      reference: .agent/baselines/typecheck.txt   # ruta relativa a la raíz del repo
 review:
   min_risk_for_review: medium  # low | medium | high | never
   adversarial_at: high
@@ -97,4 +105,4 @@ forbidden_commands:            # nunca ejecutar automáticamente
   - "pnpm deploy"
 ```
 
-Validación mínima: `version: 1`, cada check con `id` y `run`. Campos desconocidos → ignorar con aviso. Incluso con config, verifica que el binario del comando exista antes de ejecutarlo.
+Validación mínima: `version: 1`, cada check con `id` y `run`; si hay `baseline`, `format: typescript` y `reference` (ruta relativa, sin `..`, dentro del repo). Un `baseline` inválido se ignora con aviso y el check se ejecuta sin línea base. La línea base la crea solo el usuario (`qg baseline write`). Campos desconocidos → ignorar con aviso. Incluso con config, verifica que el binario del comando exista antes de ejecutarlo.

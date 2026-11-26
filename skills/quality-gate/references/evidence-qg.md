@@ -6,18 +6,21 @@
 
 ## 1. Detectar `qg` y su compatibilidad (Discover)
 
+Resuelve `qg` **una sola vez** a una ruta absoluta: primero el `PATH` (con el plugin instalado, `bin/` del plugin está en él) y, si no está, junto a esta skill. `<SKILL_DIR>` es el directorio base de esta skill que indica Claude Code; puede ser un symlink, por eso se resuelve con `cd -P`.
+
 ```bash
-QG=$(command -v qg 2>/dev/null)   # con el plugin instalado, bin/ del plugin está en el PATH
-# Si no está en PATH: junto a esta skill (instalación por symlink desde el repo agent-quality-gate).
-# <SKILL_DIR> es el directorio base de esta skill que indica Claude Code.
-[ -n "$QG" ] || { d=$(cd -P "<SKILL_DIR>" 2>/dev/null && cd ../.. && pwd); [ -x "$d/bin/qg" ] && QG="$d/bin/qg"; }
-"$QG" version --json        # requiere "schema":1 e "interface" >= 2 (>= 3 para `qg session id`)
+QG=$(command -v qg 2>/dev/null || true)
+[ -n "$QG" ] || { d=$(cd -P "<SKILL_DIR>" 2>/dev/null && cd ../.. && pwd) && [ -x "$d/bin/qg" ] && QG="$d/bin/qg"; }
+printf '%s\n' "$QG"        # vacío = no encontrado → modo sin qg
+"$QG" version --json        # requiere "schema":1 e "interface" >= 2 (>= 3 para `qg session id`, >= 4 para --baseline, baseline write y classify)
 "$QG" -C <repo> fingerprint # exit 65 = no es un repo Git → modo sin qg
 ```
 
+Copia la ruta que imprime el `printf` y úsala **literal y entre comillas** en todos los comandos siguientes (`"/ruta/con espacios/bin/qg" run …`). No exportes variables globales ni modifiques el `PATH` del usuario. La receta funciona con rutas con espacios.
+
 Usa el modo `qg` solo si se cumplen las tres condiciones: el ejecutable existe, la interfaz es compatible y la huella funciona. En cualquier otro caso, usa el modo sin `qg` y anota el motivo (`qg no instalado`, `interfaz N < 2`, `no es repo Git`).
 
-Las variables de shell **no persisten** entre llamadas a Bash: usa la ruta absoluta de `qg` en cada comando.
+Las variables de shell **no persisten** entre llamadas a Bash: por eso se resuelve una vez y se reutiliza la ruta absoluta literal en cada comando (en los ejemplos siguientes, `"$QG"` representa esa ruta).
 
 ## 2. Identificador de ejecución (run-id)
 
@@ -71,6 +74,68 @@ Exit code de `qg run` → clasificación provisional:
 | 128+n | `interrupted` | `blocked` (interrumpido) |
 | 64 / 65 | sin registro | error de uso de `qg` o repo no válido: corrige la llamada o cambia al modo sin `qg` |
 
+## 4a. Línea base de errores heredados (`--baseline`)
+
+Para proyectos con errores de TypeScript que ya existían: la línea base los registra y `qg` los compara después, de forma que solo los **nuevos** hacen fallar la verificación.
+
+```bash
+"$QG" -C <dir> run --run-id <ID> --baseline .agent/baselines/typecheck.txt --baseline-format typescript typecheck -- npx tsc --noEmit
+```
+
+- Se usa cuando `.agent/verification.yaml` declara `baseline: {format: typescript, reference: <ruta>}` en esa verificación. Sin esa declaración no inventes una línea base.
+- **Debe envolver `tsc` directamente.** No `npm run typecheck`, ni `tsc && otra-herramienta`: cualquier línea que no sea de `tsc` da `blocked`. Si el script del proyecto envuelve más cosas, pide al usuario el comando directo.
+- Compara las firmas `TSnnnn|archivo|mensaje` (sin línea ni columna) como multiconjunto, **nunca por el total**: si desaparecen 2 errores conocidos y aparecen 2 nuevos, es `failed`. Pasa solo si no hay diagnósticos nuevos.
+- Es un parser estricto: formato irreconocible, diagnósticos globales sin archivo, exit fuera de {0, 1, 2}, exit ≠ 0 sin diagnósticos, o línea base ausente, corrupta o fuera del repo → `blocked`, nunca `passed`.
+- El exit real del comando se conserva en `qg run` y en el registro. Que "pasó contra la línea base" se distingue en `qg status` (`baseline:known=K,fixed=F` y, en `--json`, el objeto `baseline` y la lista `baseline_checks`).
+- Con `--baseline` la salida del comando se muestra **al terminar**, no en directo.
+- Si hay firmas nuevas, `qg run` imprime las 20 primeras; el resto está en el archivo hermano `.new` del registro. El texto de los mensajes de TypeScript va escapado ahí.
+- Las rutas se normalizan respecto a la raíz del repo. En un monorepo, ejecuta desde la raíz o usa una línea base por paquete: dos paquetes con la misma ruta relativa colisionarían.
+- Se admite CRLF y salida con colores (se limpian antes de analizar).
+- Si la línea base cambia después del run (está ignorada por Git y se editó), la evidencia queda `stale` (`baseline_changed`). Si está versionada, cambia la huella.
+- **`qg run` nunca escribe la línea base.** Crearla o actualizarla es **solo a pedido explícito del usuario**:
+
+```bash
+"$QG" -C <dir> baseline write --format typescript --output .agent/baselines/typecheck.txt [--replace] -- npx tsc --noEmit
+```
+
+  Se niega sobre un archivo existente sin `--replace`, y ante salida irreconocible o exit inesperado. Actualizar la línea base para que un check pase es esconder una regresión: no lo hagas por iniciativa propia.
+
+**Efecto en el reporte:** el check se escribe `passed (línea base: K conocidos, F corregidos)` y el veredicto no puede ser `PASS` limpio: como máximo `PASS WITH LIMITATIONS`, con los errores heredados en "Omitido y limitaciones". Un check `clean` (exit 0, sin diagnósticos) es un `passed` normal.
+
+## 4b. Efectos secundarios antes de ejecutar (`qg classify`)
+
+```bash
+"$QG" -C <repo> classify --json -- npm run typecheck
+```
+
+No ejecuta nada: lee `package.json` (scripts), `Makefile`, archivos de shell, `.npmrc` y `pnpm-workspace.yaml` y devuelve una clase.
+
+| Clase | Qué hacer |
+|---|---|
+| `read-only` | ejecutar |
+| `writes-generated` | ejecutar; anotar que genera archivos (cachés, `dist/`, informes) y cómo evitarlo si hay un modo sin escritura |
+| `writes-source` | no ejecutar sin aprobación: modifica código fuente (formateo con `--write`, `-u`, snapshots) |
+| `installs-dependencies` | pedir aprobación |
+| `external-side-effects` | pedir aprobación (despliegue, publicación, red, datos) |
+| `unknown` | no es `read-only`: lee el script. Con indicios externos, pedir aprobación |
+
+- Gana la coincidencia más grave. Lo que no se puede inspeccionar (script inexistente, más de un nivel de indirección, JSON ilegible) es `unknown`, nunca `read-only`.
+- **Es una heurística.** Quedan falsos `read-only` conocidos (por ejemplo flags agrupados como `-bu` o `--updateSnapshot=true` en algunas herramientas). `qg run` sigue detectando los cambios durante la ejecución (`changed_during_run`), pero es tarde: léelo como una ayuda para decidir antes, no como una garantía.
+- Para evitar instalaciones implícitas, usa las formas que el propio gestor documente (p. ej. una opción para no instalar al ejecutar scripts), solo si existen en su documentación; no inventes flags.
+
+## 4c. Transparencia de caché
+
+Herramientas como Turborepo, Nx o la caché de Jest pueden reproducir un resultado anterior sin ejecutar nada. Un exit 0 así demuestra menos. Lee la salida y anota, citando la línea de la herramienta:
+
+| Lectura | Cuándo | Cómo se reporta |
+|---|---|---|
+| ejecución real | la salida muestra tareas o pruebas ejecutadas | `passed` normal |
+| caché parcial | algunas tareas "cache hit" y otras ejecutadas | `passed`, indicando cuáles salieron de caché |
+| caché total | todas desde caché (p. ej. `FULL TURBO`, `[existing outputs match the cache]`) | `passed (caché total)` con la línea citada; si el cambio afecta a lo cacheado, reejecuta sin caché con la opción que documente la herramienta |
+| desconocido | la salida no permite saberlo | `passed (caché: desconocido)` |
+
+No inventes conteos: cita lo que la herramienta imprime.
+
 ## 5. Exit 0 sin verificación real → `qg reject`
 
 Un exit 0 **no demuestra** que se haya verificado algo. Si la salida indica que no se ejecutaron pruebas, descarta esa evidencia. Ejemplos: `0 tests`, `no tests found`, `Ran 0 tests`, todos los tests `skipped`, o una suite que se autoexcluye por falta de una variable de entorno o un servicio.
@@ -105,7 +170,7 @@ Usa su `result` y la lista `checks` tal cual. **No** reconstruyas el estado de m
 
 | `qg status` | Significado | Veredicto ([report-format](report-format.md)) |
 |---|---|---|
-| `valid` | todas las obligatorias `passed` sobre la huella actual | **permite** `PASS` / `PASS WITH LIMITATIONS`; la revisión, los hallazgos y las aprobaciones siguen aplicando |
+| `valid` | todas las obligatorias `passed` sobre la huella actual | **permite** `PASS` / `PASS WITH LIMITATIONS`; la revisión, los hallazgos y las aprobaciones siguen aplicando. Si algún check lleva `baseline` (`baseline_checks`), el máximo es `PASS WITH LIMITATIONS` |
 | `failed` | alguna obligatoria falló (último registro) | `FAIL` |
 | `blocked` | no encontrado, no ejecutable o `reject` | `BLOCKED` |
 | `incomplete` | timeout, interrupción, en curso o registro ilegible | `BLOCKED` |

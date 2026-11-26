@@ -43,15 +43,15 @@ Lee [project-discovery](references/project-discovery.md). Determina:
 - Instrucciones del repo (`CLAUDE.md`, `AGENTS.md`, reglas de carpeta) y config opcional `.agent/verification.yaml`.
 - Verificaciones disponibles con su comando real y su origen.
 - Integraciones disponibles (Codex, Graphify, `qg`) — comprobadas, no supuestas.
-- **`qg` (siempre, antes de verificar):** búscalo en el `PATH` **y** junto a esta skill; `qg` no tiene por qué estar en el `PATH`:
-  ```bash
-  command -v qg || ls -l "$(cd -P '<directorio base de esta skill>' && cd ../.. && pwd)/bin/qg"
-  ```
-  Si existe, lee [evidence-qg](references/evidence-qg.md) y sigue sus §1–3 (compatibilidad, run-id, `qg require`). Solo si no aparece en ninguno de los dos sitios, o no es compatible, usa el modo sin `qg`.
+- **`qg` (siempre, antes de verificar):** resuélvelo **una vez** a una ruta absoluta (primero el `PATH`, después junto a esta skill con `cd -P`; `qg` no tiene por qué estar en el `PATH`) y reutiliza esa ruta literal y entre comillas en todos los comandos, sin exportar variables globales. Receta en [evidence-qg](references/evidence-qg.md) §1. Si existe, sigue sus §1–3 (compatibilidad, run-id, `qg require`). Solo si no aparece en ninguno de los dos sitios, o no es compatible, usa el modo sin `qg`.
+- **Efectos secundarios (con `qg`):** `qg classify -- <comando>` por cada verificación candidata, antes de ejecutarla; anota su clase en la tabla. `installs-dependencies`, `external-side-effects` o `unknown` con indicios externos **piden aprobación**; no las ejecutes por tu cuenta. Es una heurística: no sustituye a leer el script ni a [guardrails](references/guardrails.md). Detalle en evidence-qg §4b.
 - Nivel de riesgo (`low` | `medium` | `high`). El argumento `--risk` puede subirlo, nunca bajarlo por debajo de lo que exijan las señales de alto riesgo.
 
 ### 2. Verify
 Lee [feedback-loops](references/feedback-loops.md). Ejecuta las verificaciones seleccionadas (con `qg run` si está disponible), inspecciona la salida real, diagnostica, corrige de forma acotada y reejecuta lo afectado, respetando el límite de iteraciones. Un exit 0 sin pruebas ejecutadas no es `passed` (`qg reject`).
+
+- **Línea base:** si `.agent/verification.yaml` declara `baseline` en una verificación, ejecútala con `qg run --baseline <ruta> --baseline-format typescript …` (evidence-qg §4a). Pasa solo sin diagnósticos nuevos. Crear o actualizar la línea base (`qg baseline write`) es **solo a pedido explícito** del usuario; nunca para hacer pasar un check.
+- **Transparencia de caché:** anota si la salida demuestra ejecución real, caché parcial, caché total o desconocido, citando la línea de la herramienta. No inventes conteos. Una ejecución desde caché total no se presenta como ejecución real.
 
 ### 3. Review
 Lee [agent-evals](references/agent-evals.md). Decide si el riesgo exige revisión independiente, úsala si está disponible y **verifica cada hallazgo** antes de actuar: indica si se sostiene por lectura, reproducido con una prueba, confirmado con otra evidencia, pendiente de confirmación o con la revisión impedida por el sandbox. Con `--no-review` la fase queda `skipped (by user)`.
@@ -59,7 +59,7 @@ Lee [agent-evals](references/agent-evals.md). Decide si el riesgo exige revisió
 Si corriges un hallazgo `confirmed` crítico (auth, autorización, multi-tenant, concurrencia, idempotencia, secretos, datos críticos, severidad alta/crítica): reejecuta las verificaciones afectadas y pide **una** revisión independiente acotada al diff de la corrección (`adversarial-review --base <commit previo>` con el foco del hallazgo). Sin ciclos: un problema nuevo Important o Critical se reporta, no abre otra ronda. Si Codex no está disponible o está prohibido, `followup: pending` y el veredicto máximo es `PASS WITH LIMITATIONS`. Declara `review.critical_fixed` y `review.followup` en el bloque estructurado (agent-evals §5).
 
 ### 4. Report
-Con `qg`, consulta antes `qg status --run-id <ID> --json` y basa en él la tabla de verificaciones (`valid` permite aprobar, no aprueba por sí solo). Emite el reporte con el formato de [report-format](references/report-format.md). El veredicto es `PASS` solo si todas las verificaciones obligatorias son `passed` sobre el código actual (huella de evidencia vigente) y no quedan hallazgos confirmados sin resolver. Si el usuario pidió solo Discover, el veredicto es `NOT VERIFIED`. Termina el reporte con el bloque estructurado (`"kind": "quality-gate-report"`, `schema` 1) que describe report-format: mismo veredicto y riesgo que el Markdown y el `status` de `qg` sin reinterpretar.
+Con `qg`, consulta antes `qg status --run-id <ID> --json` y basa en él la tabla de verificaciones (`valid` permite aprobar, no aprueba por sí solo). Emite el reporte con el formato de [report-format](references/report-format.md). El veredicto es `PASS` solo si todas las verificaciones obligatorias son `passed` sobre el código actual (huella de evidencia vigente), no quedan hallazgos confirmados sin resolver y no hay aprobaciones pendientes. Una verificación que pasó solo contra una línea base se escribe `passed (línea base: K conocidos, F corregidos)` y limita el veredicto a `PASS WITH LIMITATIONS`. Una aprobación obligatoria pendiente para cerrar el alcance da `BLOCKED`; una acción posterior que nadie pidió (push, PR) no bloquea y se lista como `pending_optional`. Con varios repositorios, usa el esquema 2 (una tabla por repo). Si el usuario pidió solo Discover, el veredicto es `NOT VERIFIED`. Termina el reporte con el bloque estructurado (`"kind": "quality-gate-report"`, `schema` 1, o 2 con varios repositorios) que describe report-format: mismo veredicto y riesgo que el Markdown y el `status` de `qg` sin reinterpretar.
 
 ## Proporcionalidad
 

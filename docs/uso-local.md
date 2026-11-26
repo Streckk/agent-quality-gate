@@ -109,7 +109,11 @@ Otros fixtures disponibles:
 - `docs-only`;
 - `no-git`.
 
-## 7. Llevarlo a tus proyectos
+## 7. Ejemplos
+
+Cinco situaciones con salidas inventadas (errores heredados de TypeScript, workspace con varios repos, hallazgo de seguridad, verificación que genera archivos, ejecución con caché): [ejemplos.md](ejemplos.md).
+
+## 8. Llevarlo a tus proyectos
 
 - No hace falta configurar nada: Discover lee `CLAUDE.md`/`AGENTS.md`, `package.json` (con su lockfile), `nx.json`/`turbo.json`, `pyproject.toml`/`tox.ini`, `Makefile` y la CI.
 - Para fijar lo obligatorio, añade `.agent/verification.yaml` en **ese** proyecto (ejemplos en `examples/`). No en este repositorio.

@@ -5,7 +5,7 @@
 No es un orquestador. Cada invocación de `qg run` ejecuta **un** comando. Decidir qué verificar sigue siendo trabajo de la skill (`/quality-gate`) o de la persona.
 
 ```text
-bin/qg            fingerprint | run | require | status | reject | show | gc | version | session | hooks
+bin/qg            fingerprint | run | baseline | classify | require | status | reject | show | gc | version | session | hooks
 bin/qg-run        alias de `qg run`
 ```
 
@@ -201,15 +201,39 @@ Códigos de salida: `0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale
 
 `valid` **no** equivale a `PASS`. Solo afirma que existe evidencia de verificaciones deterministas vigente para el código actual.
 
+## 4a. Líneas base de errores heredados (`--baseline`, `qg baseline write`)
+
+```text
+qg run --baseline <ruta> --baseline-format typescript <check-id> -- npx tsc --noEmit
+qg baseline write --format typescript --output <ruta> [--replace] -- npx tsc --noEmit
+```
+
+Para repos con errores de TypeScript preexistentes. La línea base es un archivo de texto versionable con las **firmas** de los diagnósticos (`TSnnnn|archivo|mensaje`, sin línea ni columna), con su conteo. `qg run --baseline` las compara como **multiconjunto**, nunca por el total: el check pasa solo si no hay diagnósticos nuevos. Que desaparezcan 2 y aparezcan 2 nuevos es `failed`.
+
+- **Limitaciones.** El comando debe ser `tsc` directamente (ni `npm run`, ni `tsc && …`): cualquier línea que no sea de `tsc` da `blocked`. Salida irreconocible, diagnósticos globales sin archivo (`TS5083`), exit fuera de {0, 1, 2}, exit ≠ 0 sin diagnósticos o línea base ausente, corrupta o fuera del repo dan `blocked`, nunca `passed`.
+- **Se conserva el exit real** (`qg run` y el registro). El resultado se ve en `qg status` (`baseline:known=K,fixed=F`) y en `--json`: objeto `baseline` por check y lista `baseline_checks` en la raíz. Un check sin diagnósticos y exit 0 es un `passed` normal.
+- **Salida.** Se muestra al terminar el comando (no en directo). Las firmas nuevas (máximo 200) quedan en el archivo hermano `<registro>.new`, con el texto de los mensajes escapado; `qg gc` lo limpia con el registro.
+- **Rutas.** Se normalizan respecto a la raíz. En un monorepo, ejecuta desde la raíz o usa una línea base por paquete, porque dos paquetes con la misma ruta relativa colisionarían.
+- **Detalles.** Admite CRLF y colores. La captura de la salida usa archivos temporales en el directorio de estado (`capture.tmp.*`); si un proceso descendiente la mantiene abierta, el resultado es `capture_failed` (`blocked`).
+- **Obsolescencia.** Si la línea base cambia tras el run (ignorada por Git) el check queda `stale` (`baseline_changed`); si está versionada, cambia la huella.
+- **Escritura.** `qg run` nunca la escribe. `qg baseline write` se niega sobre un archivo existente sin `--replace`, sobre un symlink o ante salida irreconocible; no registra evidencia. Se ejecuta solo a pedido explícito del usuario.
+- **Efecto en el veredicto:** un check que pasó contra la línea base limita el reporte a `PASS WITH LIMITATIONS` ([report-format.md](../skills/quality-gate/references/report-format.md)).
+
+## 4c. Clasificación previa (`qg classify`)
+
+`qg classify [--json] -- <comando>` dice, sin ejecutar nada, si una verificación es `read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects` o `unknown`. Lee `package.json` (scripts, un nivel de indirección), `Makefile`, archivos de shell, `.npmrc` y `pnpm-workspace.yaml`; gana la coincidencia más grave y lo que no puede inspeccionar es `unknown`, nunca `read-only`.
+
+**Es una heurística:** hay falsos `read-only` conocidos (por ejemplo `-bu` agrupado o `--updateSnapshot=true`). `qg run` no cambia: sigue detectando modificaciones durante la ejecución (`changed_during_run`). La skill lo usa en Discover para pedir aprobación antes de ejecutar instalaciones, efectos externos o comandos desconocidos.
+
 ## 4b. Descartar evidencia (`qg reject`) y compatibilidad (`qg version`)
 
 ```text
 qg reject [--run-id ID] <check-id> --reason <código>     # [a-z0-9_-], p. ej. no_tests_executed
-qg version [--json]                                     # {"name":"qg","version":…,"schema":1,"interface":2}
+qg version [--json]                                     # {"name":"qg","version":…,"schema":1,"interface":4}
 ```
 
 - `reject` añade un registro `rejected` sobre la huella actual. **Solo degrada**: el check pasa a `blocked` hasta que una ejecución posterior lo sustituya. Sirve para que la evidencia refleje lo que muestra la salida: un `exit 0` que no ejecutó pruebas no debe quedar como `passed`. No afecta a otras huellas ni puede aprobar nada.
-- `interface` sube cuando cambia la interfaz de la CLI. La skill exige `interface >= 2` y `schema == 1`; si no se cumple, usa el modo sin `qg`.
+- `interface` sube cuando cambia la interfaz de la CLI. La skill exige `interface >= 2` y `schema == 1` (>= 4 para `--baseline`, `baseline write` y `classify`); si no se cumple, usa el modo sin `qg`.
 
 ## 5. Mantenimiento (`qg gc`)
 

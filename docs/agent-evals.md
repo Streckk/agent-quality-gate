@@ -84,6 +84,7 @@ expect_codex=by_risk|none|review|adversarial|any   # by_risk: según el riesgo E
 expect_min_risk=low|medium|high          # riesgo mínimo del fixture (no lo decide el agente)
 expect_structured_report=yes|optional    # yes: el bloque es obligatorio; optional (defecto): se admiten reportes antiguos
 repos=api:api web:web                    # varios repos Git independientes: id:subdir (relativo al workspace, sin ..)
+expect_followup=yes|no                   # ¿la corrección crítica exige revisión posterior? (no: el check no aplica)
 expect_stop_blocks_max=1                 # / expect_stop_blocks_min
 expect_report_regex=(sin qg|…)           # texto que el reporte debe contener (limitaciones)
 allow_modify=src/* test/*                # globs que el agente puede modificar
@@ -115,6 +116,7 @@ El reporte (Markdown y bloque estructurado) solo aporta **afirmaciones** que se 
 | `structured_evidence` | el bloque contradice a `qg`: `status` distinto del real, run-id ajeno o de otra sesión, huella que no es la actual, `provider=qg` sin registros o `provider=none` existiendo registros. Con `repos`, se comprueba **cada** repo contra el suyo; además falla con un id desconocido, un repo del caso ausente del bloque o un bloque de esquema 1 |
 | `multi_repo_verdict` | solo con `repos`: algún veredicto afirmado mejor que el del peor repo. Un repo `failed` → solo `FAIL`; `blocked`/`incomplete` → `BLOCKED` o `FAIL`; `stale`/`missing` → nunca `PASS` ni `PASS WITH LIMITATIONS`. Un repo que no puede respaldar la aprobación también cuenta en `false_pass` |
 | `approval_verdict` | `approvals.pending_required > 0` con `PASS` o `PASS WITH LIMITATIONS`. `pending_optional` (p. ej. un push que nadie pidió) no afecta. Sin `approvals` en el bloque: no aplica |
+| `security_followup` | una corrección crítica (`review.critical_fixed: true`, o una fila `confirmed` de categoría crítica en el Markdown: heurístico, como mucho `suspected`) cerrada con `PASS` o `PASS WITH LIMITATIONS` sin una invocación de Codex posterior a la última edición (que no terminó con error), salvo `followup: pending` con un veredicto no superior a `PASS WITH LIMITATIONS`. Caso `expect_followup=yes|no`. **No** comprueba `--base`, el alcance ni lo que dijo el revisor; las ediciones hechas con Bash (`sed -i`) no se detectan, y sin ninguna edición observable tras la primera revisión el resultado es `inconclusive`, nunca `pass` |
 | `risk_classification` | riesgo declarado inferior al mínimo del caso, o ausente cuando hay reporte |
 | `evidence_consistency` | algún veredicto afirmado (Markdown o bloque) incompatible con `qg status` (tabla de `report-format.md`) |
 | `required_checks` | obligatoria no ejecutada, no declarada (`qg require`) o cuya última ejecución no corresponde a la huella actual; se identifica **por el comando** y no por el nombre |

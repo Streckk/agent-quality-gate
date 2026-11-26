@@ -35,6 +35,10 @@ Aunque una verificación o corrección parezca necesitarlas:
 - cambiar `git config` (identidad incluida),
 - enviar código a servicios externos (p. ej. revisión de Codex) cuando el repo lo restrinja o el diff contenga secretos o datos sensibles.
 
+Además, por clase de efecto (`qg classify`): `installs-dependencies`, `external-side-effects` y `unknown` con indicios externos requieren aprobación antes de ejecutar; `writes-source` también, porque modifica código. Y crear o actualizar una línea base de errores (`qg baseline write`) requiere petición explícita del usuario.
+
+En el reporte, separa lo que bloquea de lo que solo se ofrece: una aprobación **obligatoria** para cerrar el alcance pendiente da `BLOCKED` (`approvals.pending_required`); una acción posterior que nadie pidió (push, PR) no bloquea y va como `pending_optional`. Ver [report-format](report-format.md).
+
 La aprobación vale para la acción concreta que se pidió, no para acciones similares posteriores.
 
 ## 3. Comandos
@@ -47,6 +51,8 @@ La aprobación vale para la acción concreta que se pidió, no para acciones sim
 ## 4. Veredicto
 
 - Una condición obligatoria en `failed` o `blocked` → el veredicto **no** puede ser `PASS`.
+- Una verificación que pasó solo contra una línea base → como máximo `PASS WITH LIMITATIONS`.
+- Una aprobación obligatoria pendiente → `BLOCKED`.
 - Documenta la evidencia del bloqueo y qué haría falta para desbloquearlo.
 
 ## 5. Autoría

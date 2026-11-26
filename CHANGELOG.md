@@ -4,6 +4,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Añadido (líneas base, varios repositorios, segunda revisión y efectos secundarios)
+- **Líneas base de errores heredados** (`qg` interfaz 4): `qg run --baseline <ruta> --baseline-format typescript` compara las firmas `TSnnnn|archivo|mensaje` como multiconjunto, nunca por el total, y conserva el exit real. `qg status` marca `baseline:known=K,fixed=F`; `--json` añade `baseline` por check y `baseline_checks`. `qg baseline write` crea la línea base solo a pedido y nunca desde `qg run`. Salida irreconocible, exit inesperado o línea base ausente o corrupta → `blocked`. Limitaciones documentadas: debe envolver `tsc` directamente, la salida se muestra al terminar, rutas normalizadas respecto a la raíz (monorepos: una línea base por paquete o ejecutar desde la raíz).
+- **`qg classify`**: clase de efectos secundarios (`read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects`, `unknown`) sin ejecutar nada. Es una heurística con falsos `read-only` conocidos.
+- **Reporte de varios repositorios (esquema 2)** con `repos` y `approvals` (`pending_required` → `BLOCKED`; `pending_optional` no bloquea). El esquema 1 sigue siendo válido. El evaluador contrasta cada repo (`multi_repo_verdict`, `approval_verdict`; clave de caso `repos`).
+- **Segunda revisión acotada** tras corregir un hallazgo crítico: campos `review.critical_fixed` y `review.followup`, y check `security_followup` (clave de caso `expect_followup`).
+- **Skill y referencias:** resolución de `qg` una sola vez a ruta absoluta (sin exportar variables), `qg classify` en Discover, `--baseline` y transparencia de caché en Verify, veredicto máximo `PASS WITH LIMITATIONS` con línea base, `BLOCKED` con aprobación obligatoria pendiente.
+- `docs/ejemplos.md`: cinco ejemplos genéricos. `examples/nodejs/verification.yaml` incluye un check con `baseline`.
+
 ### Añadido (configuración de CLAUDE.md)
 - `/quality-gate setup [--scope project|user] [--status|--remove|--dry-run] [--file …] [--import-agents] [--force]`: instala, actualiza, consulta o quita un bloque administrado y versionado (`<!-- agent-quality-gate:start v1 -->`) con las instrucciones de **cuándo** usar la skill.
   - La skill recibe los argumentos con `$ARGUMENTS` y delega en el script determinista `bin/qg-setup`, que está en el `PATH` del plugin y se localiza con `${CLAUDE_SKILL_DIR}` si la skill se instaló por symlink.

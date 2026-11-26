@@ -104,6 +104,15 @@ qg require --run-id mi-sesion lint unit       # requisitos y evidencia aislados 
 
 Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md). Validación en [docs/validacion-v0.2.0-dev.md](docs/validacion-v0.2.0-dev.md).
 
+### Líneas base, varios repositorios, segunda revisión y efectos secundarios
+
+- **Líneas base de errores heredados:** `qg run --baseline` compara los diagnósticos de `tsc` con una línea base creada a pedido (`qg baseline write`). Solo los errores nuevos fallan; un check que pasó contra la línea base limita el veredicto a `PASS WITH LIMITATIONS`.
+- **Varios repositorios:** el bloque estructurado tiene un esquema 2 con evidencia por repo y `approvals` (`pending_required` bloquea; `pending_optional`, como un push que nadie pidió, no). El veredicto es el del peor repo.
+- **Segunda revisión acotada:** tras corregir un hallazgo crítico confirmado, una revisión independiente sobre el diff de la corrección (`review.critical_fixed`, `review.followup`).
+- **Efectos secundarios:** `qg classify` clasifica una verificación antes de ejecutarla (`read-only`, `writes-generated`, `installs-dependencies`…); es una heurística. La skill también anota la transparencia de caché.
+
+Ejemplos genéricos en [docs/ejemplos.md](docs/ejemplos.md).
+
 ## Plugin y hooks opcionales (v0.2.0-dev, en desarrollo)
 
 El repositorio es también un **plugin de Claude Code** (`.claude-plugin/plugin.json`): skill + `qg` en el `PATH` + tres hooks **desactivados por defecto**.
