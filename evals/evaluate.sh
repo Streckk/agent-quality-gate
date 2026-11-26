@@ -221,14 +221,14 @@ st_result() {
   printf '%s' "${s:-error}"
 }
 st_baseline() { printf '%s' "$1" | sed -n 's/.*"baseline_checks":\[\([^]]*\)\]}$/\1/p' | tr -d '"' | tr ',' ' '; }
-QG_STATUS=none; CUR_FP=""
+QG_STATUS=none
 for i in ${R_DIR[@]+"${!R_DIR[@]}"}; do
   R_FP[i]=$(bash "$QG" -C "${R_DIR[i]}" fingerprint 2>/dev/null) || everr "qg fingerprint falló en el ${R_IDS[i]:+repo ${R_IDS[i]}}${R_IDS[i]:-workspace}"
   R_ST[i]=none; R_BL[i]=""
   if [ -n "$RID" ]; then j=$(qg_status_json "${R_DIR[i]}"); R_ST[i]=$(st_result "$j"); R_BL[i]=$(st_baseline "$j"); fi
   [ "${R_ST[i]}" = error ] && everr "qg status devolvió una salida no interpretable${R_IDS[i]:+ en el repo ${R_IDS[i]}}"
 done
-if [ $IS_GIT = 1 ]; then CUR_FP=${R_FP[0]}; QG_STATUS=${R_ST[0]}
+if [ $IS_GIT = 1 ]; then QG_STATUS=${R_ST[0]}
 elif [ $MULTI = 1 ] && [ -n "$RID" ]; then
   # Estado agregado: el peor de los repos (failed > error > blocked > incomplete > stale > missing > valid).
   for s in failed error blocked incomplete stale missing valid; do
@@ -593,7 +593,7 @@ LC_ALL=C grep -Eiq -- "$FU_RX" "$FINAL_MD" && FU_REASON=${FU_REASON:-markdown}
 POL_RX='(prohib|forbidden|no autorizad|not allowed|pol(í|i)tica)'
 FU_POLICY=0
 printf '%s' "$(sr review_reason)" | LC_ALL=C grep -Eiq -- "$POL_RX" && FU_POLICY=1
-LC_ALL=C grep -Eiq -- "codex[^.|]{0,120}$POL_RX|$POL_RX[^.|]{0,120}codex" "$FINAL_MD" && FU_POLICY=1
+LC_ALL=C grep -Eiq -- "codex[^.|]{0,120}$POL_RX|${POL_RX}[^.|]{0,120}codex" "$FINAL_MD" && FU_POLICY=1
 fu_bad() {   # un incumplimiento solo es `fail` si el hallazgo crítico se declaró en el bloque
   if [ "$CRIT" = structured ]; then check security_followup fail "$1"
   else check security_followup suspected "$1 (hallazgo crítico deducido de la tabla Markdown)"; fi

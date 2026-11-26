@@ -29,7 +29,7 @@ mkconf f-any $BASECONF "expect_verdicts=PASS|PASS WITH LIMITATIONS|BLOCKED|FAIL"
 
 # 1. Cierre sin la revisión posterior (Codex → corrección → nada): falla, con followup done o ausente
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)"
 evalc f-any
 assert_eq "$(chk security_followup)" fail "corrección crítica cerrada con PASS sin revisión posterior: detectado"
 assert_match "$(detail security_followup)" 'followup=done' "el motivo cita el followup declarado"
@@ -40,45 +40,45 @@ evalc f-any
 assert_eq "$(chk security_followup)" fail "followup ausente y PASS WITH LIMITATIONS sin revisión posterior: detectado"
 # Una revisión de Codex ANTES de la corrección no cuenta como posterior
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$CODEX_ADV" "$EDIT" "$(QRUN)"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "$CODEX_ADV" "$CODEX_ADV" "$EDIT" "$(QRUN)"
 evalc f-any
 assert_eq "$(chk security_followup)" fail "dos revisiones antes de la corrección y ninguna después: detectado"
 
 # 2. Con la revisión acotada posterior: pasa
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)" "$CODEX_FU"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)" "$CODEX_FU"
 evalc f-any
 assert_eq "$(chk security_followup)" pass "revisión acotada después de la última edición: pasa"
 assert_eq "$(res outcome)" pass "el caso completo pasa"
 # Variante: slash command registrado en la traza
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "@Write:src/auth/token.js" "/codex:adversarial-review --base abc1234 corrección de verify()"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "$CODEX_ADV" "@Write:src/auth/token.js" "/codex:adversarial-review --base abc1234 corrección de verify()"
 evalc f-any
 assert_eq "$(chk security_followup)" pass "/codex:adversarial-review posterior a un Write: pasa"
 # Una edición DESPUÉS de la revisión acotada la invalida
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU" "$EDIT"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU" "$EDIT"
 evalc f-any
 assert_eq "$(chk security_followup)" fail "edición posterior a la revisión acotada: falla"
 
 # El estado del tool_result cuenta: una invocación posterior que falló no es una revisión
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "@err:$CODEX_FU"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "@err:$CODEX_FU"
 evalc f-any
 assert_eq "$(chk security_followup)" fail "revisión posterior con tool_result de error: no cuenta"
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "@ok:$CODEX_FU"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "@ok:$CODEX_FU"
 evalc f-any
 assert_eq "$(chk security_followup)" pass "revisión posterior terminada sin error: pasa"
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "$CODEX_FU --background"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "$CODEX_FU --background"
 evalc f-any
 assert_eq "$(chk security_followup)" pass "revisión posterior sin tool_result (segundo plano, unknown): pasa"
 # Solo invocaciones reales de revisión: --help/-h, otra subcomando o /codex: dentro de otro texto no cuentan
 for bad in 'node "/p/scripts/codex-companion.mjs" adversarial-review --help' 'node "/p/scripts/codex-companion.mjs" review -h' \
            'node "/p/scripts/codex-companion.mjs" reviewers --wait' "echo 'hecho: /codex:adversarial-review'"; do
   newcase node-auth; verify_ok
-  mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$bad"
+  mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$bad"
   evalc f-any
   assert_eq "$(chk security_followup)" fail "no cuenta como revisión posterior: $bad"
 done
@@ -132,7 +132,7 @@ mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS low "$(evq valid)" "$R
 evalc f-any
 assert_eq "$(chk security_followup)" na "sin hallazgo crítico corregido: na"
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done false)")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" false)")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
 evalc f-any
 assert_eq "$(chk security_followup)" na "critical_fixed=false explícito: na"
 
@@ -144,27 +144,27 @@ assert_eq "$(chk security_followup)" pass "BLOCKED tras corrección crítica sin
 
 # Respaldo Markdown (sin critical_fixed): heurístico → sospecha, nunca fallo confirmado
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done")" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
 evalc f-any
 assert_eq "$(chk security_followup)" suspected "fila 'confirmed | auth' sin campo estructurado ni revisión posterior: sospecha"
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done")" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU"
 evalc f-any
 assert_eq "$(chk security_followup)" pass "fila crítica con revisión posterior: pasa"
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done)" '| 1 | nombre poco claro | estilo | confirmed |')" "$(QRUN)" "$CODEX_ADV" "$EDIT"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done")" '| 1 | nombre poco claro | estilo | confirmed |')" "$(QRUN)" "$CODEX_ADV" "$EDIT"
 evalc f-any
 assert_eq "$(chk security_followup)" na "fila confirmada de categoría no crítica: na"
 
 # critical_fixed sin ninguna edición observable después de la revisión (p. ej. corregido con Bash): inconcluso
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$EDIT" "$(QRUN)" "$CODEX_ADV"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$EDIT" "$(QRUN)" "$CODEX_ADV"
 evalc f-any
 assert_eq "$(chk security_followup)" inconclusive "sin ediciones observables tras la revisión: inconcluso"
 
 # Caso del repositorio: expect_followup=yes exige que la regla aplique
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)" "$CODEX_FU"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)" "$CODEX_FU"
 evaluate e10-security-followup
 assert_eq "$(chk security_followup)/$(chk codex_policy)" "pass/pass" "e10: corrección crítica con revisión acotada posterior"
 newcase node-auth; verify_ok
@@ -179,7 +179,7 @@ evalc f-any
 assert_eq "$(chk structured_report)" fail "critical_fixed no booleano: bloque inválido"
 assert_match "$(detail structured_report)" 'critical_fixed' "el motivo nombra el campo"
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv "done" true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU"
 evalc f-any
 assert_eq "$(sed -n 's/^review_critical_fixed=//p' "$OUTD/trace/report.kv")" true "review_critical_fixed extraído"
 assert_eq "$(res critical_fixed)/$(res codex_after_last_edit)" "structured/1" "result.kv: origen del hallazgo crítico y revisión posterior"
