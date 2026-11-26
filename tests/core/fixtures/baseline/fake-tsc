@@ -1,0 +1,6 @@
+#!/bin/sh
+# tsc falso para las pruebas de líneas base: imprime una salida fija y sale con el código dado.
+# Uso: fake-tsc <archivo-stdout> <exit-code> [<archivo-stderr>]
+cat "$1"
+[ -n "$3" ] && cat "$3" >&2
+exit "$2"

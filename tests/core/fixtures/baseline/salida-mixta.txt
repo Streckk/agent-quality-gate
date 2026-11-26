@@ -1,0 +1,8 @@
+src/mixto(1).ts(10,5): error TS2322: Type   'A' is not	assignable to type 'B'.
+  Continuación de la cadena de mensajes que no entra en la firma.
+[96msrc/pretty.ts[0m:[93m3[0m:[93m7[0m - [91merror[0m[90m TS2304: [0mCannot find name 'zeta'.
+
+3 const y = zeta;
+        ~~~~
+
+Found 2 errors in 2 files.

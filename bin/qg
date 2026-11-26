@@ -4,6 +4,9 @@
 # Subcomandos:
 #   qg fingerprint [--json]                         huella del contenido actual del repositorio
 #   qg run [opciones] <check-id> -- <cmd> [args…]  ejecuta UN comando y registra evidencia
+#      [--baseline <ruta> --baseline-format typescript]  compara los diagnósticos con una línea base
+#   qg baseline write --format typescript --output <ruta> [--replace] -- <cmd> [args…]
+#                                                   crea la línea base de diagnósticos heredados
 #   qg require [--run-id ID] [--clear] [<id>…]      declara las verificaciones obligatorias (por sesión)
 #   qg status [--require ID]… [--run-id ID] [--json]  ¿hay evidencia vigente para el estado actual?
 #   qg reject [--run-id ID] <check-id> --reason R   descarta la última evidencia (p. ej. exit 0 sin pruebas)
@@ -19,7 +22,10 @@
 
 QG_VERSION="0.2.0-dev"
 QG_SCHEMA=1
-QG_INTERFACE=3          # 2: require/status por sesión, reject, version · 3: session, hooks (aditiva)
+# Interfaz (solo ampliaciones): 2: require/status por sesión, reject, version · 3: session, hooks
+# 4: líneas base de diagnósticos (run --baseline, baseline write, objeto "baseline" y
+#    "baseline_checks" en status --json)
+QG_INTERFACE=4
 EX_USAGE=64
 EX_STATE=65
 QG_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
@@ -298,7 +304,14 @@ qg_record_reset() {
   R_fp_start=""; R_fp_end=""; R_index_start=""; R_head_start=""; R_started_epoch=""; R_started_at=""
   R_finished_at=""; R_finished_epoch=""; R_duration_s=""; R_pid=""; R_host=""; R_cwd=""; R_argv=""
   R_argc=""; R_changed_during_run=""; R_timeout_s=""; R_qg_version=""
+  R_baseline_ref=""; R_baseline_sha=""; R_baseline_format=""; R_baseline_result=""; R_baseline_reason=""
+  R_baseline_known=""; R_baseline_new=""; R_baseline_fixed=""
 }
+
+# Claves de línea base (interfaz 4). Solo se escriben si el registro usa una línea base: los demás
+# registros no cambian. Un qg de interfaz 3 las ignora y trata el registro por su exit_code (un exit
+# distinto de 0 → failed): conservador, nunca un falso PASS.
+QG_BL_KEYS="baseline_ref baseline_sha baseline_format baseline_result baseline_reason baseline_known baseline_new baseline_fixed"
 
 qg_record_body() {
   local k v out=""
@@ -308,6 +321,12 @@ qg_record_body() {
     v="R_$k"; v=${!v}   # expansión indirecta sobre nombres fijos de esta lista
     out="$out$k=$(qg_esc "$v")"$'\n'
   done
+  if [ -n "$R_baseline_format" ]; then
+    for k in $QG_BL_KEYS; do
+      v="R_$k"; v=${!v}
+      out="$out$k=$(qg_esc "$v")"$'\n'
+    done
+  fi
   printf '%s' "$out"
 }
 
@@ -322,7 +341,8 @@ qg_record_read() {
     case $key in
       schema|qg_version|check_id|run_id|status|exit_code|signal|error|fp_start|fp_end|index_start|\
       head_start|changed_during_run|started_at|started_epoch|finished_at|finished_epoch|duration_s|\
-      timeout_s|pid|host|cwd|argc|argv)
+      timeout_s|pid|host|cwd|argc|argv|baseline_ref|baseline_sha|baseline_format|baseline_result|\
+      baseline_reason|baseline_known|baseline_new|baseline_fixed)
         printf -v "R_$key" '%s' "$val" ;;   # $key ya validada contra la lista fija
       *) [[ $key =~ ^[a-z][a-z0-9_]*$ ]] || return 1 ;;   # clave futura: se ignora
     esac
@@ -343,6 +363,26 @@ qg_record_read() {
     rejected)
       [ "$R_fp_end" = "$R_fp_start" ] || return 1
       [[ $R_error =~ $QG_REASON_RE ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  qg_record_baseline_ok || return 1
+  return 0
+}
+
+# Coherencia de las claves de línea base: un registro manipulado no puede aprobar por esta vía.
+qg_record_baseline_ok() {
+  [ -z "$R_baseline_format$R_baseline_result" ] && return 0
+  qg_bl_ref_ok "$R_baseline_ref" && [ -n "$R_baseline_format" ] || return 1
+  [ -z "$R_baseline_reason" ] || [[ $R_baseline_reason =~ $QG_REASON_RE ]] || return 1
+  case $R_baseline_result in
+    "") [ "$R_status" = running ] || return 1 ;;
+    inconclusive) [ -n "$R_baseline_reason" ] || return 1 ;;
+    passed|failed)
+      qg_is_uint "$R_baseline_known" && qg_is_uint "$R_baseline_new" && qg_is_uint "$R_baseline_fixed" || return 1
+      [ "$R_status" = completed ] || return 1
+      if [ "$R_baseline_result" = passed ]; then [ "$R_baseline_new" = 0 ] || return 1
+      else [ "$R_baseline_new" != 0 ] || return 1; fi
+      [ "$R_baseline_reason" = clean ] || [[ $R_baseline_sha =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 1 ;;
     *) return 1 ;;
   esac
   return 0
@@ -394,6 +434,200 @@ qg_cmd_fingerprint() {
   fi
 }
 
+# ---------------------------------------------------------------- líneas base de diagnósticos
+
+# Un typecheck con errores heredados solo puede pasar contra una línea base EXPLÍCITA de diagnósticos
+# conocidos, comparada por firmas normalizadas (multiconjunto), nunca por el total. El exit code real
+# del comando se conserva siempre; "pasó contra la línea base" se distingue en status.
+#
+# Archivo de línea base (versionado en el repo, entra en la huella):
+#   # qg-baseline 1 format=typescript
+#   <conteo>\t<firma>            una línea por firma, ordenada por firma (LC_ALL=C)
+# Firma TypeScript: TSnnnn|<archivo relativo a la raíz, normalizado>|<mensaje con espacios colapsados>.
+# Línea y columna no entran en la firma: mover código no crea errores nuevos. Un mensaje que cambia
+# (p. ej. un tipo renombrado) cuenta como error nuevo, a propósito: mejor un FAIL que revisar que un
+# falso PASS. Solo se usa la primera línea de cada diagnóstico (las cadenas de mensajes no entran).
+QG_BL_HEADER_TS="# qg-baseline 1 format=typescript"
+QG_BL_MAX_NEW=200
+
+# Ruta de línea base válida: relativa a la raíz del repo, sin '..' ni caracteres de control.
+qg_bl_ref_ok() {
+  local r=$1 re='[[:cntrl:]]'
+  [ -n "$r" ] || return 1
+  case $r in /*) return 1 ;; esac
+  case "/$r/" in */../*) return 1 ;; esac
+  [[ $r =~ $re ]] && return 1
+  return 0
+}
+
+# Resuelve la línea base (siguiendo enlaces simbólicos) y exige que quede dentro del repo.
+# Define QG_BL_FILE (ruta física) o QG_BL_ERR (baseline_missing|baseline_outside_repo|baseline_not_file).
+qg_bl_locate() {
+  local f="$QG_TOP/$1" t n=0 top dir
+  QG_BL_FILE=""; QG_BL_ERR=baseline_missing
+  top=$(cd -P -- "$QG_TOP" 2>/dev/null && pwd -P) || return 1
+  while [ -L "$f" ]; do
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    t=$(readlink "$f") || return 1
+    case $t in /*) f=$t ;; *) f="${f%/*}/$t" ;; esac
+  done
+  [ -e "$f" ] || return 1
+  dir=$(cd -P -- "${f%/*}" 2>/dev/null && pwd -P) || return 1
+  case "$dir/" in "$top/"*) ;; *) QG_BL_ERR=baseline_outside_repo; return 1 ;; esac
+  [ -f "$f" ] || { QG_BL_ERR=baseline_not_file; return 1; }
+  QG_BL_FILE="$dir/${f##*/}"; QG_BL_ERR=""
+  return 0
+}
+
+# Analiza la salida de tsc. Escribe una firma por diagnóstico en $1 y define QG_TS_DIAG (diagnósticos)
+# y QG_TS_UNREC (líneas con "error TS" que no se reconocen). $2 = directorio del comando relativo a la
+# raíz (git rev-parse --show-prefix); el resto, archivos de salida. Formatos aceptados:
+#   ruta(l,c): error TSnnnn: mensaje        ruta:l:c - error TSnnnn: mensaje   (--pretty, con ANSI)
+qg_ts_parse() {
+  local sigs=$1 prefix=$2 ptop; shift 2
+  ptop=$(cd -P -- "$QG_TOP" 2>/dev/null && pwd -P) || ptop=""
+  QG_AWK_TOP=$QG_TOP QG_AWK_PTOP=$ptop QG_AWK_PREFIX=$prefix LC_ALL=C awk '
+    function norm(p,   n, i, k, a, st, out) {
+      if (substr(p, 1, 1) == "/") {
+        if (top != "" && index(p, top "/") == 1) p = substr(p, length(top) + 2)
+        else if (ptop != "" && index(p, ptop "/") == 1) p = substr(p, length(ptop) + 2)
+        else return p                      # fuera del repo: se conserva tal cual
+      } else p = prefix p
+      n = split(p, a, "/"); k = 0
+      for (i = 1; i <= n; i++) {
+        if (a[i] == "" || a[i] == ".") continue
+        if (a[i] == ".." && k > 0 && st[k] != "..") { k--; continue }
+        st[++k] = a[i]
+      }
+      out = ""
+      for (i = 1; i <= k; i++) out = out (i > 1 ? "/" : "") st[i]
+      return out
+    }
+    BEGIN { top = ENVIRON["QG_AWK_TOP"]; ptop = ENVIRON["QG_AWK_PTOP"]; prefix = ENVIRON["QG_AWK_PREFIX"]
+            u = 0; ansi = sprintf("%c", 27) "\\[[0-9;]*[A-Za-z]" }
+    {
+      l = $0
+      sub(/\r$/, "", l)
+      gsub(ansi, "", l)
+      if (index(l, "error TS") == 0) next
+      if (!match(l, /\([0-9]+,[0-9]+\): error TS[0-9]+: /) && !match(l, /:[0-9]+:[0-9]+ - error TS[0-9]+: /)) { u++; next }
+      path = substr(l, 1, RSTART - 1); code = substr(l, RSTART, RLENGTH); msg = substr(l, RSTART + RLENGTH)
+      sub(/^.*error TS/, "", code); sub(/: $/, "", code)
+      sub(/^[ \t]+/, "", path); path = norm(path)
+      gsub(/[ \t]+/, " ", msg); sub(/^ /, "", msg); sub(/ $/, "", msg)
+      if (path == "" || msg == "") { u++; next }
+      print "TS" code "|" path "|" msg
+    }
+    END { print "#U " u }' "$@" > "$sigs.raw" || { rm -f "$sigs.raw"; return 1; }
+  QG_TS_UNREC=$(sed -n '$s/^#U //p' "$sigs.raw")
+  sed '$d' "$sigs.raw" > "$sigs" || { rm -f "$sigs.raw"; return 1; }
+  rm -f "$sigs.raw"
+  qg_is_uint "$QG_TS_UNREC" || return 1
+  QG_TS_DIAG=$(wc -l < "$sigs" | tr -d ' ')
+  return 0
+}
+
+# Compara un archivo de línea base con las firmas actuales (multiconjunto). Imprime en la primera línea
+# "OK\t<known>\t<new>\t<fixed>", "CORRUPT" o "UNSUPPORTED"; después "<conteo>\t<firma>" por firma nueva.
+#   new = Σ max(0, actual − base) · fixed = Σ max(0, base − actual) · known = Σ min(actual, base)
+qg_bl_compare() {   # <archivo de línea base (no vacío)> <firmas actuales> <cabecera esperada>
+  QG_AWK_HDR=$3 LC_ALL=C awk '
+    BEGIN { hdr = ENVIRON["QG_AWK_HDR"]; bad = ""; seen = 0; havep = 0 }
+    FNR == NR {
+      if (bad != "") next
+      if (FNR == 1) {
+        if ($0 == hdr) { seen = 1; next }
+        if ($0 ~ /^# qg-baseline /) bad = "UNSUPPORTED"; else bad = "CORRUPT"
+        next
+      }
+      t = index($0, "\t")
+      if (t < 2) { bad = "CORRUPT"; next }
+      c = substr($0, 1, t - 1); s = substr($0, t + 1)
+      if (c !~ /^[1-9][0-9]*$/ || s == "" || index(s, "\t") > 0) { bad = "CORRUPT"; next }
+      if (havep && s <= prev) { bad = "CORRUPT"; next }   # ordenada y sin firmas repetidas
+      prev = s; havep = 1; base[s] = c + 0
+      next
+    }
+    { cur[$0]++ }
+    END {
+      if (bad == "" && !seen) bad = "CORRUPT"
+      if (bad != "") { print bad; exit 0 }
+      known = 0; nw = 0; fixed = 0
+      for (s in cur) {
+        b = (s in base) ? base[s] : 0
+        if (cur[s] > b) { nw += cur[s] - b; nl[s] = cur[s] - b; known += b } else known += cur[s]
+      }
+      for (s in base) { a = (s in cur) ? cur[s] : 0; if (base[s] > a) fixed += base[s] - a }
+      print "OK\t" known "\t" nw "\t" fixed
+      for (s in nl) print nl[s] "\t" s
+    }' "$1" "$2"
+}
+
+# Evalúa la salida capturada de un `qg run --baseline`. Define R_baseline_* y QG_BL_NEW (firmas nuevas,
+# máx. QG_BL_MAX_NEW líneas, ya escapadas). Nunca escribe la línea base.
+# shellcheck disable=SC2034  # las variables R_* se leen por expansión indirecta en qg_record_body
+qg_bl_analyze() {   # <exit> <ref> <prefijo> <base temporal> <salida>…
+  local rc=$1 ref=$2 prefix=$3 tmp=$4 res line; shift 4
+  R_baseline_known=""; R_baseline_new=""; R_baseline_fixed=""; R_baseline_sha=""; R_baseline_reason=""
+  R_baseline_result=inconclusive; QG_BL_NEW=""
+  if ! qg_ts_parse "$tmp.sig" "$prefix" "$@"; then R_baseline_reason=parse_error; return 0; fi
+  if [ "$rc" = 0 ] && [ "$QG_TS_DIAG" = 0 ] && [ "$QG_TS_UNREC" = 0 ]; then
+    # Sin diagnósticos: pasa por sí mismo, sin depender de la línea base (y sin su marca en status).
+    R_baseline_result=passed; R_baseline_reason=clean; R_baseline_known=0; R_baseline_new=0; R_baseline_fixed=0
+    return 0
+  fi
+  if ! qg_bl_locate "$ref"; then R_baseline_reason=$QG_BL_ERR; return 0; fi
+  case $rc in 0|1|2) ;; *) R_baseline_reason=exit_code_unknown; return 0 ;; esac
+  if [ "$QG_TS_UNREC" != 0 ]; then R_baseline_reason=unrecognized_output; return 0; fi
+  if [ "$rc" != 0 ] && [ "$QG_TS_DIAG" = 0 ]; then R_baseline_reason=no_diagnostics; return 0; fi
+  # Se compara una copia: el sha registrado es exactamente el del contenido comparado.
+  if ! cat -- "$QG_BL_FILE" > "$tmp.base" 2>/dev/null; then R_baseline_reason=baseline_missing; return 0; fi
+  if [ ! -s "$tmp.base" ]; then R_baseline_reason=baseline_corrupt; return 0; fi
+  R_baseline_sha=$(git hash-object --no-filters -- "$tmp.base" 2>/dev/null) || R_baseline_sha=""
+  [ -n "$R_baseline_sha" ] || { R_baseline_reason=hash_error; return 0; }
+  qg_bl_compare "$tmp.base" "$tmp.sig" "$QG_BL_HEADER_TS" > "$tmp.cmp" || { R_baseline_reason=compare_error; return 0; }
+  res=$(head -n 1 "$tmp.cmp")
+  case $res in
+    CORRUPT) R_baseline_reason=baseline_corrupt; R_baseline_sha=""; return 0 ;;
+    UNSUPPORTED) R_baseline_reason=baseline_unsupported; R_baseline_sha=""; return 0 ;;
+    OK*) ;;
+    *) R_baseline_reason=compare_error; R_baseline_sha=""; return 0 ;;
+  esac
+  local tab=$'\t'
+  res=${res#OK"$tab"}; R_baseline_known=${res%%"$tab"*}
+  res=${res#*"$tab"};  R_baseline_new=${res%%"$tab"*}; R_baseline_fixed=${res#*"$tab"}
+  if [ "$R_baseline_new" = 0 ]; then R_baseline_result=passed; else R_baseline_result=failed; fi
+  while IFS= read -r line; do
+    QG_BL_NEW="$QG_BL_NEW$(qg_esc "$line")"$'\n'
+  done <<EOF_NEW
+$(sed 1d "$tmp.cmp" | LC_ALL=C sort -t "$tab" -k 2 | head -n "$QG_BL_MAX_NEW")
+EOF_NEW
+  [ "$QG_BL_NEW" = $'\n' ] && QG_BL_NEW=""
+  return 0
+}
+
+# Evalúa en status un registro completado, con huella sin cambios, que usó una línea base.
+qg_eval_baseline() {
+  local sha=""
+  case $R_baseline_result in
+    passed|failed)
+      if [ "$R_baseline_reason" = clean ]; then
+        if [ "$R_baseline_result" = passed ] && [ "$R_exit_code" = 0 ]; then C_result=passed; C_reason=""; C_bl=0
+        else C_result=blocked; C_reason=baseline:inconsistent_record; fi
+        return 0
+      fi
+      if [ "$R_baseline_format" != typescript ]; then C_result=blocked; C_reason=baseline:baseline_unsupported; return 0; fi
+      if qg_bl_locate "$R_baseline_ref"; then sha=$(git hash-object --no-filters -- "$QG_BL_FILE" 2>/dev/null); fi
+      # La línea base cambió (o desapareció) después de la ejecución: la evidencia ya no es vigente.
+      if [ -z "$sha" ] || [ "$sha" != "$R_baseline_sha" ]; then C_result=stale; C_reason=baseline:baseline_changed
+      elif [ "$R_baseline_result" = passed ]; then
+        C_result=passed; C_reason="baseline:known=$R_baseline_known,fixed=$R_baseline_fixed"
+      else C_result=failed; C_reason="baseline:new=$R_baseline_new"; fi ;;
+    *) C_result=blocked; C_reason="baseline:${R_baseline_reason:-inconclusive}" ;;
+  esac
+  return 0
+}
+
 # ---------------------------------------------------------------- qg run
 
 QG_CHILD=""; QG_SIG=""; QG_TRAPPED=0
@@ -411,16 +645,34 @@ qg_sig_num() { case $1 in HUP) echo 1 ;; INT) echo 2 ;; TERM) echo 15 ;; *) echo
 
 # Ejecuta "$@" sin shell intermedio, en su propio grupo de procesos, con timeout.
 # Define QG_RC, QG_TIMED_OUT, QG_SIG.
+# Con QG_CAP=<prefijo>, la salida se sigue mostrando en la terminal y además se copia (tee) en
+# <prefijo>.out y <prefijo>.err; QG_CAP_OK=1 si la copia está completa.
 qg_exec() {
   local tmo=$1 grace=$2; shift 2
-  local marker wd=""
+  local marker wd="" cdir="" t1="" t2=""
   marker=$(mktemp "${TMPDIR:-/tmp}/qg-tmo.XXXXXX") && rm -f "$marker"
-  QG_SIG=""; QG_TIMED_OUT=0
+  QG_SIG=""; QG_TIMED_OUT=0; QG_CAP_OK=0
+  if [ -n "${QG_CAP:-}" ]; then
+    if cdir=$(mktemp -d "${TMPDIR:-/tmp}/qg-cap.XXXXXX") && mkfifo "$cdir/o" "$cdir/e"; then
+      # Los tee ignoran las señales: terminan al cerrarse la tubería (EOF) y no pierden el final.
+      ( trap '' INT TERM HUP; exec tee "$QG_CAP.out" < "$cdir/o" ) &
+      t1=$!
+      ( trap '' INT TERM HUP; exec tee "$QG_CAP.err" < "$cdir/e" >&2 ) &
+      t2=$!
+      QG_CAP_OK=1
+    else
+      [ -n "$cdir" ] && rm -rf "$cdir"; cdir=""
+    fi
+  fi
   trap 'qg_on_signal INT' INT
   trap 'qg_on_signal TERM' TERM
   trap 'qg_on_signal HUP' HUP
   set -m                                   # cada proceso en segundo plano: su propio grupo
-  ( exec "$@" ) </dev/null &
+  if [ "$QG_CAP_OK" = 1 ]; then
+    ( exec "$@" ) </dev/null >"$cdir/o" 2>"$cdir/e" &
+  else
+    ( exec "$@" ) </dev/null &
+  fi
   QG_CHILD=$!
   if [ "$tmo" -gt 0 ]; then
     ( trap - INT TERM HUP
@@ -442,6 +694,21 @@ qg_exec() {
   if [ -n "$QG_SIG" ] || [ "$QG_TIMED_OUT" = 1 ]; then
     kill -KILL -- "-$QG_CHILD" 2>/dev/null   # restos del grupo (nietos) tras timeout/interrupción
   fi
+  if [ -n "$cdir" ]; then
+    # Espera acotada a que los tee vacíen la tubería. Si un descendiente que escapó del grupo la
+    # mantiene abierta, la copia queda incompleta (QG_CAP_OK=0) y no se usa para decidir nada.
+    local i=0
+    while [ "$i" -lt 50 ] && { kill -0 "$t1" 2>/dev/null || kill -0 "$t2" 2>/dev/null; }; do
+      sleep 0.1 2>/dev/null || sleep 1
+      i=$((i + 1))
+    done
+    if kill -0 "$t1" 2>/dev/null || kill -0 "$t2" 2>/dev/null; then
+      QG_CAP_OK=0
+      kill -KILL "$t1" "$t2" 2>/dev/null
+    fi
+    wait "$t1" "$t2" 2>/dev/null
+    rm -rf "$cdir"
+  fi
   trap - INT TERM HUP
   QG_CHILD=""
 }
@@ -449,17 +716,25 @@ qg_exec() {
 # shellcheck disable=SC2034  # las variables R_* se leen por expansión indirecta en qg_record_body
 qg_cmd_run() {
   local timeout="${QG_TIMEOUT:-3600}" grace="${QG_GRACE:-10}" run_id="${QG_RUN_ID:-unspecified}"
+  local bl_ref="" bl_fmt="" bl_set=0
   while [ $# -gt 0 ]; do
     case $1 in
       --timeout) [ $# -ge 2 ] || qg_usage "--timeout requiere segundos"; timeout=$2; shift 2 ;;
       --grace)   [ $# -ge 2 ] || qg_usage "--grace requiere segundos"; grace=$2; shift 2 ;;
       --run-id)  [ $# -ge 2 ] || qg_usage "--run-id requiere un valor"; run_id=$2; shift 2 ;;
+      --baseline) [ $# -ge 2 ] || qg_usage "--baseline requiere una ruta"; bl_ref=$2; bl_set=1; shift 2 ;;
+      --baseline-format) [ $# -ge 2 ] || qg_usage "--baseline-format requiere un formato"; bl_fmt=$2; bl_set=1; shift 2 ;;
       --) qg_usage "falta <check-id> antes de --" ;;
       -*) qg_usage "opción desconocida: $1" ;;
       *) break ;;
     esac
   done
-  [ $# -ge 1 ] || qg_usage "uso: qg run [--timeout S] [--run-id ID] <check-id> -- <comando> [args…]"
+  [ $# -ge 1 ] || qg_usage "uso: qg run [--timeout S] [--run-id ID] [--baseline <ruta> --baseline-format typescript] <check-id> -- <comando> [args…]"
+  if [ $bl_set = 1 ]; then
+    [ -n "$bl_ref" ] && [ -n "$bl_fmt" ] || qg_usage "--baseline y --baseline-format se usan juntos"
+    [ "$bl_fmt" = typescript ] || qg_usage "formato de línea base no admitido '$bl_fmt' (admitido: typescript)"
+    qg_bl_ref_ok "$bl_ref" || qg_usage "--baseline: ruta relativa a la raíz del repositorio, sin '..' (recibido '$bl_ref')"
+  fi
   local id=$1; shift
   [[ $id =~ $QG_ID_RE ]] || qg_usage "check-id inválido '$id' (permitido: [A-Za-z0-9._-], máx. 64)"
   [ "${1:-}" = "--" ] || qg_usage "falta -- entre <check-id> y el comando"
@@ -482,6 +757,13 @@ qg_cmd_run() {
   R_fp_start=$fp_start; R_index_start=$(qg_index_state); R_head_start=$QG_HEAD
   R_started_epoch=$(qg_now_epoch); R_started_at=$(qg_now_iso); R_timeout_s=$timeout
   R_pid=$$; R_host=$(qg_host); R_cwd=$PWD; R_argc=$#; R_argv=$(qg_redact_argv "$@")
+  local prefix="" cap=""
+  QG_BL_NEW=""
+  if [ $bl_set = 1 ]; then
+    R_baseline_ref=$bl_ref; R_baseline_format=$bl_fmt
+    prefix=$(git rev-parse --show-prefix 2>/dev/null) || prefix=""
+    cap="$QG_STATE/capture.tmp.$$.$RANDOM"   # temporal (qg gc retira los abandonados)
+  fi
   local rec; rec=$(qg_record_create "$dir") || exit "$EX_STATE"
 
   # Resolver el ejecutable sin shell: solo programas externos (sin funciones ni builtins).
@@ -492,6 +774,7 @@ qg_cmd_run() {
   esac
 
   local rc qg_exit
+  QG_CAP_OK=0
   if [ -n "$err" ]; then
     R_status=error; R_error=$err
     if [ "$err" = not_found ]; then rc=127; else rc=126; fi
@@ -499,7 +782,7 @@ qg_cmd_run() {
     R_fp_end=$fp_start; R_changed_during_run=0
     qg_err "'$1': $( [ "$err" = not_found ] && echo 'comando no encontrado' || echo 'no es ejecutable'); no se ejecutó nada"
   else
-    qg_exec "$timeout" "$grace" "$@"
+    QG_CAP=$cap qg_exec "$timeout" "$grace" "$@"
     rc=$QG_RC
     R_exit_code=$rc
     if [ -n "$QG_SIG" ]; then
@@ -512,6 +795,27 @@ qg_cmd_run() {
     if qg_fp_compute; then R_fp_end=$QG_FP; else R_fp_end=unknown; fi
     if [ "$R_fp_end" = "$fp_start" ]; then R_changed_during_run=0; else R_changed_during_run=1; fi
   fi
+  local bl_note=""
+  if [ $bl_set = 1 ]; then
+    if [ "$R_status" != completed ]; then
+      R_baseline_result=inconclusive; R_baseline_reason=not_completed
+    elif [ "$QG_CAP_OK" != 1 ]; then
+      R_baseline_result=inconclusive; R_baseline_reason=capture_failed
+    else
+      qg_bl_analyze "$rc" "$bl_ref" "$prefix" "$cap" "$cap.out" "$cap.err"
+    fi
+    rm -f "$cap.out" "$cap.err" "$cap.sig" "$cap.sig.raw" "$cap.base" "$cap.cmp"
+    # Solo se conservan las firmas nuevas (nunca la salida cruda), junto al registro.
+    if [ -n "$QG_BL_NEW" ]; then
+      qg_atomic_write "$rec.new" "$QG_BL_NEW" || qg_err "aviso: no se pudieron guardar las firmas nuevas"
+    fi
+    bl_note=" baseline=$R_baseline_result"
+    case $R_baseline_result in
+      inconclusive) bl_note="$bl_note($R_baseline_reason)" ;;
+      *) [ "$R_baseline_reason" = clean ] && bl_note="$bl_note(sin diagnósticos)" ||
+           bl_note="$bl_note(known=$R_baseline_known new=$R_baseline_new fixed=$R_baseline_fixed)" ;;
+    esac
+  fi
   R_finished_epoch=$(qg_now_epoch); R_finished_at=$(qg_now_iso)
   R_duration_s=$((R_finished_epoch - R_started_epoch))
   qg_atomic_write "$rec" "$(qg_record_body)" || qg_die "$EX_STATE" "no se pudo escribir el registro final"
@@ -519,7 +823,11 @@ qg_cmd_run() {
   local note="vigente"
   [ "$R_changed_during_run" = 1 ] && note="OBSOLETA: el contenido cambió durante la ejecución"
   [ "$R_fp_end" = unknown ] && note="INCOMPLETA: no se pudo calcular la huella final"
-  qg_err "check=$id status=$R_status exit=$R_exit_code duración=${R_duration_s}s evidencia=$note"
+  qg_err "check=$id status=$R_status exit=$R_exit_code duración=${R_duration_s}s evidencia=$note$bl_note"
+  if [ -n "$QG_BL_NEW" ]; then
+    qg_err "diagnósticos nuevos respecto a $bl_ref (primeros 20; hasta $QG_BL_MAX_NEW en $rec.new):"
+    printf '%s' "$QG_BL_NEW" | head -n 20 | sed 's/^/  /' >&2
+  fi
   exit "$qg_exit"
 }
 
@@ -588,10 +896,12 @@ qg_cmd_require() {
 
 # ---------------------------------------------------------------- qg status
 
-# Evalúa un check respecto a la huella actual. Define C_result, C_reason, C_file, C_exit, C_run, C_when.
+# Evalúa un check respecto a la huella actual. Define C_result, C_reason, C_file, C_exit, C_run, C_when
+# y, si el registro usó una línea base, C_bl=1 y C_bl_* (ref, format, known, new, fixed, result).
 qg_eval_check() {
   local id=$1 filter=$2 d f r other=0 corrupt=0
   C_result=missing; C_reason=no_records; C_file=""; C_exit=""; C_run=""; C_when=""
+  C_bl=0; C_bl_ref=""; C_bl_format=""; C_bl_known=""; C_bl_new=""; C_bl_fixed=""; C_bl_result=""
   d=$(qg_check_dir "$id")
   [ -d "$d" ] || return 0
   while IFS= read -r f; do
@@ -605,6 +915,10 @@ qg_eval_check() {
     elif [ "$R_status" != running ] && [ "$R_fp_end" = "$QG_FP" ]; then about=1; fi
     if [ $about = 0 ]; then other=1; continue; fi
     C_file=$f; C_exit=$R_exit_code; C_run=$R_run_id; C_when=${R_finished_at:-$R_started_at}
+    if [ -n "$R_baseline_format" ] && [ "$R_baseline_reason" != clean ]; then
+      C_bl=1; C_bl_ref=$R_baseline_ref; C_bl_format=$R_baseline_format; C_bl_known=$R_baseline_known
+      C_bl_new=$R_baseline_new; C_bl_fixed=$R_baseline_fixed; C_bl_result=$R_baseline_result
+    fi
     case $R_status in
       running)
         C_result=incomplete
@@ -617,6 +931,7 @@ qg_eval_check() {
       completed)
         if [ "$R_fp_end" = unknown ]; then C_result=incomplete; C_reason=no_final_fingerprint
         elif [ "$R_fp_start" != "$R_fp_end" ]; then C_result=stale; C_reason=changed_during_run
+        elif [ -n "$R_baseline_format" ]; then qg_eval_baseline
         elif [ "$R_exit_code" = 0 ]; then C_result=passed; C_reason=""
         else C_result=failed; C_reason="exit=$R_exit_code"; fi ;;
     esac
@@ -659,7 +974,7 @@ qg_cmd_status() {
   fi
 
   QG_CORRUPT=0
-  local overall=missing overall_reason="" best=0 id rk lines="" jchecks=""
+  local overall=missing overall_reason="" best=0 id rk lines="" jchecks="" jbl="" blc=""
   if [ ${#req[@]} -eq 0 ]; then
     overall=missing; overall_reason=no_required_checks; best=2
   else
@@ -669,18 +984,23 @@ qg_cmd_status() {
       rk=$(qg_rank "$C_result")
       if [ "$rk" -gt "$best" ]; then best=$rk; overall=$C_result; fi
       lines="$lines$(printf '  %-20s %-10s %s' "$id" "$C_result" "${C_reason:+($C_reason) }${C_exit:+exit=$C_exit }${C_run:+run=$C_run }$C_when")"$'\n'
-      jchecks="$jchecks${jchecks:+,}{\"id\":$(qg_json_str "$id"),\"result\":$(qg_json_str "$C_result"),\"reason\":$(qg_json_str "$C_reason"),\"exit_code\":${C_exit:-null},\"run_id\":$(qg_json_str "$C_run"),\"record\":$(qg_json_str "$C_file"),\"finished_at\":$(qg_json_str "$C_when")}"
+      jbl=""
+      if [ "$C_bl" = 1 ]; then
+        jbl=",\"baseline\":{\"ref\":$(qg_json_str "$C_bl_ref"),\"format\":$(qg_json_str "$C_bl_format"),\"known\":${C_bl_known:-null},\"new\":${C_bl_new:-null},\"fixed\":${C_bl_fixed:-null},\"result\":$(qg_json_str "$C_bl_result")}"
+        blc="$blc${blc:+,}$(qg_json_str "$id")"
+      fi
+      jchecks="$jchecks${jchecks:+,}{\"id\":$(qg_json_str "$id"),\"result\":$(qg_json_str "$C_result"),\"reason\":$(qg_json_str "$C_reason"),\"exit_code\":${C_exit:-null},\"run_id\":$(qg_json_str "$C_run"),\"record\":$(qg_json_str "$C_file"),\"finished_at\":$(qg_json_str "$C_when")$jbl}"
     done
   fi
   [ "$overall" = passed ] && overall=valid
 
   local idx; idx=$(qg_index_state)
   if [ $json = 1 ]; then
-    printf '{"schema":%s,"qg_version":%s,"result":%s,"reason":%s,"fingerprint":%s,"index_fingerprint":%s,"index":%s,"head":%s,"required_from":%s,"run_id_filter":%s,"checks":[%s],"corrupt_records":%s}\n' \
+    printf '{"schema":%s,"qg_version":%s,"result":%s,"reason":%s,"fingerprint":%s,"index_fingerprint":%s,"index":%s,"head":%s,"required_from":%s,"run_id_filter":%s,"checks":[%s],"corrupt_records":%s,"baseline_checks":[%s]}\n' \
       "$QG_SCHEMA" "$(qg_json_str "$QG_VERSION")" "$(qg_json_str "$overall")" "$(qg_json_str "$overall_reason")" \
       "$(qg_json_str "$QG_FP")" "$(qg_json_str "$QG_FP_INDEX")" "$(qg_json_str "$idx")" "$(qg_json_str "$QG_HEAD")" \
       "$(qg_json_str "$from")" "$(if [ -n "$filter" ]; then qg_json_str "$filter"; else echo null; fi)" \
-      "$jchecks" "$QG_CORRUPT"
+      "$jchecks" "$QG_CORRUPT" "$blc"
   else
     printf 'resultado: %s%s\n' "$overall" "${overall_reason:+ ($overall_reason)}"
     printf 'huella actual: %s\n' "$QG_FP"
@@ -789,14 +1109,22 @@ EOF
       [ -n "$f" ] || continue
       qg_record_read "$d/$f"; r=$?
       if ! qg_record_name_ok "$f" || [ $r -eq 1 ]; then
-        mv -f "$d/$f" "$QG_STATE/quarantine/${d##*/}.$f" && q_n=$((q_n + 1)); continue
+        mv -f "$d/$f" "$QG_STATE/quarantine/${d##*/}.$f" && q_n=$((q_n + 1))
+        [ -f "$d/$f.new" ] && mv -f "$d/$f.new" "$QG_STATE/quarantine/${d##*/}.$f.new"
+        continue
       fi
       [ $r -eq 2 ] && continue                       # esquema futuro: no se toca
       n=$((n + 1))
-      if [ $n -gt "$QG_KEEP_RECORDS" ] && [ "$R_status" != running ]; then rm -f "$d/$f" && p_n=$((p_n + 1)); fi
+      if [ $n -gt "$QG_KEEP_RECORDS" ] && [ "$R_status" != running ]; then
+        rm -f "$d/$f" "$d/$f.new" && p_n=$((p_n + 1))
+      fi
     done <<EOF
 $(qg_record_list "$d")
 EOF
+    # Firmas nuevas (<registro>.new) cuyo registro ya no existe.
+    for f in "$d"/*.rec.new; do
+      [ -f "$f" ] && [ ! -e "${f%.new}" ] && rm -f "$f"
+    done
   done
   # sesiones sin actividad desde hace más de QG_SESSION_DAYS días (30 por defecto)
   local s_n=0
@@ -811,6 +1139,74 @@ EOF
   fi
   qg_unlock
   qg_err "gc: temporales=$tmp_n cuarentena=$q_n podados=$p_n sesiones=$s_n"
+}
+
+# ---------------------------------------------------------------- qg baseline
+
+# Crea (o con --replace, sustituye) una línea base a partir de la salida de un comando. No registra
+# evidencia: la línea base es un archivo del repo que se revisa y se versiona como cualquier otro.
+qg_cmd_baseline() {
+  local sub=${1:-}; [ $# -gt 0 ] && shift
+  local usage="uso: qg baseline write --format typescript --output <ruta> [--replace] [--timeout S] -- <comando> [args…]"
+  [ "$sub" = write ] || qg_usage "$usage"
+  local fmt="" outp="" replace=0 timeout="${QG_TIMEOUT:-3600}" grace="${QG_GRACE:-10}"
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --format)  [ $# -ge 2 ] || qg_usage "--format requiere un formato"; fmt=$2; shift 2 ;;
+      --output)  [ $# -ge 2 ] || qg_usage "--output requiere una ruta"; outp=$2; shift 2 ;;
+      --replace) replace=1; shift ;;
+      --timeout) [ $# -ge 2 ] || qg_usage "--timeout requiere segundos"; timeout=$2; shift 2 ;;
+      --) shift; break ;;
+      *) qg_usage "argumento desconocido: $1 ($usage)" ;;
+    esac
+  done
+  [ $# -ge 1 ] || qg_usage "$usage"
+  [ "$fmt" = typescript ] || qg_usage "--format obligatorio; formato admitido: typescript"
+  qg_bl_ref_ok "$outp" || qg_usage "--output: ruta relativa a la raíz del repositorio, sin '..' (recibido '$outp')"
+  qg_is_uint "$timeout" || qg_usage "--timeout debe ser un entero >= 0 (0 = sin límite)"
+  qg_is_uint "$grace" || qg_usage "QG_GRACE debe ser un entero >= 0"
+  qg_git_init
+  qg_state_init
+  local dest="$QG_TOP/$outp" top pdir
+  top=$(cd -P -- "$QG_TOP" 2>/dev/null && pwd -P) || qg_die "$EX_STATE" "no se pudo resolver la raíz del repositorio"
+  pdir=$(cd -P -- "${dest%/*}" 2>/dev/null && pwd -P) || qg_die "$EX_STATE" "no existe el directorio de '$outp'"
+  case "$pdir/" in "$top/"*) ;; *) qg_die "$EX_STATE" "'$outp' queda fuera del repositorio" ;; esac
+  dest="$pdir/${dest##*/}"
+  [ -L "$dest" ] && qg_die "$EX_STATE" "'$outp' es un enlace simbólico; se rechaza"
+  if [ -e "$dest" ]; then
+    [ -f "$dest" ] || qg_die "$EX_STATE" "'$outp' existe y no es un archivo regular"
+    [ $replace = 1 ] || qg_die "$EX_STATE" "'$outp' ya existe; usa --replace para sustituirla (revisa el diff antes de versionarla)"
+  fi
+  case $1 in
+    */*) [ -f "$1" ] && [ -x "$1" ] || qg_die 127 "'$1': no existe o no es ejecutable; no se ejecutó nada" ;;
+    *)   type -P "$1" >/dev/null 2>&1 || qg_die 127 "'$1': comando no encontrado; no se ejecutó nada" ;;
+  esac
+  local cap="$QG_STATE/capture.tmp.$$.$RANDOM" rc why="" prefix
+  prefix=$(git rev-parse --show-prefix 2>/dev/null) || prefix=""
+  QG_CAP=$cap qg_exec "$timeout" "$grace" "$@"
+  rc=$QG_RC
+  if [ -n "$QG_SIG" ]; then why="interrumpido por $QG_SIG"
+  elif [ "$QG_TIMED_OUT" = 1 ]; then why="superó el timeout (${timeout}s)"
+  elif [ "$QG_CAP_OK" != 1 ]; then why="no se pudo capturar la salida completa"
+  elif ! qg_ts_parse "$cap.sig" "$prefix" "$cap.out" "$cap.err"; then why="no se pudo analizar la salida"
+  else
+    case $rc in 0|1|2) ;; *) why="exit $rc fuera de los conocidos de tsc {0,1,2}" ;; esac
+    [ -z "$why" ] && [ "$QG_TS_UNREC" != 0 ] && why="$QG_TS_UNREC línea(s) con 'error TS' no reconocidas"
+    [ -z "$why" ] && [ "$rc" != 0 ] && [ "$QG_TS_DIAG" = 0 ] && why="exit $rc sin diagnósticos reconocibles"
+  fi
+  local body="" tab=$'\t' n_sig=0
+  if [ -z "$why" ]; then
+    body=$(LC_ALL=C awk '{ c[$0]++ } END { for (k in c) print c[k] "\t" k }' "$cap.sig" | LC_ALL=C sort -t "$tab" -k 2)
+    [ -n "$body" ] && n_sig=$(printf '%s\n' "$body" | wc -l | tr -d ' ')
+  fi
+  local n_diag=${QG_TS_DIAG:-0}
+  rm -f "$cap.out" "$cap.err" "$cap.sig" "$cap.sig.raw"
+  [ -z "$why" ] || qg_die "$EX_STATE" "no se escribe la línea base: $why"
+  if [ -e "$dest" ] && [ $replace = 0 ]; then qg_die "$EX_STATE" "'$outp' apareció durante la ejecución; no se sobrescribe"; fi
+  local tmp="$dest.tmp.$$.$RANDOM"
+  { printf '%s\n' "$QG_BL_HEADER_TS"; [ -n "$body" ] && printf '%s\n' "$body"; } > "$tmp" &&
+    chmod 644 "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; qg_die "$EX_STATE" "no se pudo escribir '$outp'"; }
+  qg_err "línea base escrita en $outp: $n_diag diagnósticos, $n_sig firmas distintas (exit del comando: $rc)"
 }
 
 # ---------------------------------------------------------------- qg session (sesiones de Claude Code)
@@ -1054,12 +1450,18 @@ qg_cmd_hooks() {
 # ---------------------------------------------------------------- principal
 
 qg_help() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Códigos de salida de qg status: 0 valid · 1 failed · 2 blocked · 3 incomplete · 4 stale · 5 missing
 qg run devuelve el código real del comando; 124 timeout; 126/127 no ejecutable/no encontrado;
 128+n interrumpido por la señal n. Errores de qg: 64 uso, 65 estado/Git.
+
+Líneas base (errores heredados): con --baseline, qg compara las firmas de los diagnósticos
+(TSnnnn|archivo|mensaje, sin línea ni columna) con las del archivo, como multiconjunto, nunca por
+el total. El check pasa solo si no hay diagnósticos nuevos (status lo marca baseline:known=K,fixed=F);
+el exit real del comando se conserva. Salida irreconocible, exit fuera de {0,1,2} o línea base
+ausente, corrupta o fuera del repo → blocked. qg run nunca escribe la línea base: usa qg baseline write.
 EOF
 }
 
@@ -1077,6 +1479,7 @@ qg_main() {
     gc)             qg_cmd_gc "$@" ;;
     help|-h|--help) qg_help ;;
     reject)         qg_cmd_reject "$@" ;;
+    baseline)       qg_cmd_baseline "$@" ;;
     session)        qg_cmd_session "$@" ;;
     hooks)          qg_cmd_hooks "$@" ;;
     version|--version) qg_cmd_version "$@" ;;
