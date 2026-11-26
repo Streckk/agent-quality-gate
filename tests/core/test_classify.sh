@@ -164,4 +164,95 @@ assert_match "$(qg version --json)" '"interface":4' "interfaz sigue en 4"
 O=$(mktemp -d "$TESTS_TMP/fuera.XXXXXX"); printf '{"scripts":{"l":"eslint ."}}\n' > "$O/package.json"
 assert_eq "$(cls "$O" npm run l)" read-only "fuera de un repo Git"
 
+# --- ronda de correcciones 1: nunca read-only por error
+F=$(new_repo)
+cat > "$F/package.json" <<'JSON'
+{
+  "scripts": {
+    "u1": "eslint . \u0026\u0026 rm -rf dist",
+    "u2": "eslint .\u000a--fix",
+    "u3": "eslint . \u003e salida.txt",
+    "snap": "jest -u",
+    "snap2": "jest",
+    "bg": "eslint . & rm -rf dist",
+    "amp": "eslint . &> out.txt",
+    "var": "eslint $FLAGS",
+    "var2": "eslint \"${FLAGS}\"",
+    "lit": "eslint '$FLAGS'"
+  },
+  "scripts": {
+    "ok": "eslint .",
+    "snap2": "jest",
+    "gosrc": "go mod tidy"
+  }
+}
+JSON
+assert_ne "$(cls "$F" npm run ok)" unknown "scripts duplicado: gana el último (ok existe)"
+assert_eq "$(cls "$F" npm run u1)" unknown "scripts duplicado: el primero se descarta"
+G=$(new_repo)
+cat > "$G/package.json" <<'JSON'
+{ "scripts": {
+  "u1": "eslint . \u0026\u0026 rm -rf dist",
+  "u2": "eslint .\u000a--fix",
+  "u3": "eslint . \u003e salida.txt",
+  "snap": "jest -u",
+  "snap2": "jest",
+  "snap3": "jest --updateSnapshot",
+  "bg": "eslint . & rm -rf dist",
+  "bg2": "eslint . &",
+  "amp": "eslint . &> out.txt",
+  "amp2": "eslint . >& out.txt",
+  "var": "eslint $FLAGS",
+  "var2": "eslint \"${FLAGS}\"",
+  "lit": "eslint '$FLAGS' && echo \"a & b\"",
+  "devnull": "eslint . &>/dev/null",
+  "fd": "eslint . 2>&1"
+} }
+JSON
+assert_eq "$(cls "$G" npm run u1)" unknown "\\u0026\\u0026 se decodifica: eslint . && rm -rf dist no es read-only"
+assert_nomatch "$(cls "$G" npm run u2)" '^read-only$' "\\u000a --fix no es read-only"
+assert_eq "$(cls "$G" npm run u2)" unknown "u000a(salto)--fix → no es read-only"
+assert_eq "$(cls "$G" npm run u3)" writes-generated "\\u003e (>) se decodifica como redirección"
+U=$(new_repo); printf '{"scripts":{"u4":"eslint . %su00e9"}}\n' '\' > "$U/package.json"
+assert_eq "$(cls "$U" npm run u4)" unknown "\\u no ASCII → parse_error (unknown)"
+assert_match "$(clsj "$U" npm run u4)" 'parse_error' "\\u no ASCII: parse_error"
+assert_eq "$(cls "$G" npm run snap)" writes-source "jest -u en un script → writes-source"
+assert_eq "$(cls "$G" npm run snap3)" writes-source "jest --updateSnapshot → writes-source"
+assert_eq "$(cls "$G" npm run snap2)" read-only "jest sin -u → read-only"
+assert_eq "$(cls "$G" npm run snap2 -- -u)" writes-source "npm run a -- -u → writes-source"
+assert_eq "$(cls "$G" jest -u)" writes-source "jest -u → writes-source"
+assert_eq "$(cls "$G" vitest run -u)" writes-source "vitest -u → writes-source"
+assert_eq "$(cls "$G" playwright test --update-snapshots)" writes-source "playwright --update-snapshots → writes-source"
+assert_eq "$(cls "$G" pytest --snapshot-update)" writes-source "pytest --snapshot-update → writes-source"
+assert_eq "$(cls "$G" biome check --apply .)" writes-source "biome --apply → writes-source"
+assert_eq "$(cls "$G" biome check --apply-unsafe .)" writes-source "biome --apply-unsafe → writes-source"
+assert_eq "$(cls "$G" biome check .)" read-only "biome check → read-only"
+assert_eq "$(cls "$G" go test ./...)" read-only "go test → read-only"
+assert_eq "$(cls "$G" go vet ./...)" read-only "go vet → read-only"
+assert_eq "$(cls "$G" cargo clippy)" read-only "cargo clippy → read-only"
+assert_eq "$(cls "$G" cargo check)" read-only "cargo check → read-only"
+assert_eq "$(cls "$G" go run .)" unknown "go run → unknown"
+assert_eq "$(cls "$G" cargo run)" unknown "cargo run → unknown"
+assert_eq "$(cls "$G" cargo fmt)" writes-source "cargo fmt → writes-source"
+assert_eq "$(cls "$G" cargo update)" writes-source "cargo update → writes-source"
+assert_eq "$(cls "$G" go get x)" writes-source "go get → writes-source"
+assert_eq "$(cls "$G" go mod tidy)" writes-source "go mod tidy → writes-source"
+assert_eq "$(cls "$G" cargo publish)" external-side-effects "cargo publish → external"
+assert_eq "$(cls "$G" cargo build)" writes-generated "cargo build → writes-generated"
+assert_eq "$(cls "$G" cargo install x)" installs-dependencies "cargo install → installs"
+assert_eq "$(cls "$G" go)" unknown "go sin subcomando → unknown"
+assert_eq "$(cls "$G" npm run bg)" unknown "eslint . & rm -rf dist → no read-only"
+assert_eq "$(cls "$G" npm run bg2)" read-only "eslint . & (segundo vacío) → read-only"
+assert_eq "$(cls "$G" npm run amp)" writes-generated "&> archivo → redirección"
+assert_eq "$(cls "$G" npm run amp2)" writes-generated ">& archivo → redirección"
+assert_eq "$(cls "$G" npm run devnull)" read-only "&>/dev/null no es escritura"
+assert_eq "$(cls "$G" npm run fd)" read-only "2>&1 no es escritura"
+assert_eq "$(cls "$G" npm run var)" unknown "eslint \$FLAGS → unknown"
+assert_match "$(clsj "$G" npm run var)" 'expansion' "\$FLAGS: motivo expansion"
+assert_eq "$(cls "$G" npm run var2)" unknown "\"\${FLAGS}\" → unknown"
+assert_eq "$(cls "$G" npm run lit)" read-only "\$ entre comillas simples y & entre comillas dobles → read-only"
+# make: el globbing no se aplica a los prerequisitos
+H=$(new_repo); printf 'all: *\n\teslint .\n' > "$H/Makefile"; : > "$H/zzz"
+assert_eq "$(cls "$H" make all)" unknown "prerequisito con comodín no se expande ni se ejecuta"
+
 finish

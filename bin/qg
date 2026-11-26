@@ -1558,7 +1558,7 @@ cl_pkg_scripts() {
   LC_ALL=C awk '
     function ws() { while (pos <= n && index(" \t\r\n", substr(s, pos, 1))) pos++ }
     function bad() { print "ERR"; failed = 1; exit 2 }
-    function str(   c, out, e, h) {
+    function str(   c, out, e, h, u) {
       if (substr(s, pos, 1) != "\"") bad()
       pos++; out = ""
       while (1) {
@@ -1572,8 +1572,12 @@ cl_pkg_scripts() {
           else if (e == "\"" || e == "\\" || e == "/") out = out e
           else if (e == "u") {
             h = substr(s, pos, 4)
-            if (h !~ /^[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$/) bad()
-            pos += 4; out = out "?"
+            if (h !~ /^00[0-7][0-9A-Fa-f]$/) bad()   # solo ASCII: cualquier otro \u es ilegible
+            pos += 4; u = index("0123456789abcdef", tolower(substr(h, 3, 1))) - 1
+            u = u * 16 + index("0123456789abcdef", tolower(substr(h, 4, 1))) - 1
+            if (u == 10) out = out " ; "
+            else if (u < 32 || u == 127) out = out " "
+            else out = out sprintf("%c", u)
           } else bad()
         } else { out = out c; pos++ }
       }
@@ -1621,6 +1625,7 @@ cl_pkg_scripts() {
         pos++; ws()
         if (k == "scripts") {
           if (substr(s, pos, 1) != "{") bad()
+          out = ""   # clave duplicada: gana la última
           scripts()
         } else skipval()
         ws(); c = substr(s, pos, 1); pos++
@@ -1697,7 +1702,7 @@ cl_name_hints() {
 # Texto de shell: lo separa en órdenes simples y clasifica cada una.
 cl_text() {   # cl_text <depth> <texto>
   local lvl=$1 t=$2 seg
-  case $t in *'$('*|*'`'*) cl_add 5 ambiguous "sustitución de comandos o variable de make en: $t" ;; esac
+  case $t in *'`'*) cl_add 5 ambiguous "sustitución de comandos en: $t" ;; esac
   t=$(CL_T=$t awk '
     BEGIN {
       t = ENVIRON["CL_T"]; n = length(t); q = ""; out = ""
@@ -1707,17 +1712,21 @@ cl_text() {   # cl_text <depth> <texto>
         if (q != "") {
           if (c == q) q = ""
           if (c == ";" || c == "|" || c == "&") c = "\001"
+          else if (c == "$" && q == "\"") out = out "\002"
           out = out c; continue
         }
         if (c == "\"" || c == "\047") { q = c; out = out c; continue }
         if (d == "&&" || d == "||") { out = out "\n"; i++; continue }
         if (c == ";" || c == "|") { out = out "\n"; continue }
+        if (c == "&" && substr(t, i - 1, 1) != ">" && substr(t, i + 1, 1) != ">") { out = out "\n"; continue }
+        if (c == "$") out = out "\002"
         out = out c
       }
       print out
     }')
   while IFS= read -r seg; do
     [ -n "${seg//[[:space:]]/}" ] || continue
+    case $seg in *$'\002'*) cl_add 5 expansion "expansión de variable o comando que no se puede resolver en: ${seg//$'\002'/}" ;; esac
     set -f; set -- $seg; set +f
     cl_seg "$lvl" "$@"
   done <<EOF
@@ -1813,12 +1822,14 @@ cl_make() {   # cl_make <depth> <args…>
   case $body in NOFOUND*) cl_add 5 script_inexistente "el objetivo '$t' no está en ${mf##*/}"; return ;; esac
   while IFS= read -r line; do
     case $line in
-      D*) for d in ${line#D}; do
+      D*) set -f
+          for d in ${line#D}; do
             case $d in
               .PHONY|*%*|*'$'*) cl_add 5 ambiguous "prerequisito no resoluble: $d" ;;
-              *) cl_make "$((lvl + 1))" "$d" ;;
+              *) set +f; cl_make "$((lvl + 1))" "$d"; set -f ;;
             esac
-          done ;;
+          done
+          set +f ;;
       R*) case ${line#R} in
             *'$(MAKE)'*|*'${MAKE}'*) cl_add 5 indirect "receta con \$(MAKE): ${line#R}" ;;
             *) cl_text "$((lvl + 1))" "${line#R}" ;;
@@ -1857,15 +1868,16 @@ cl_seg() {   # cl_seg <depth> <palabras…>
   for w in "$@"; do
     w=${w#[\"\']}; w=${w%[\"\']}
     case $w in
-      --fix|--fix=*|--write|--write=*) cl_add 3 fix_flag "$w en los argumentos" ;;
+      --fix|--fix=*|--write|--write=*|-u|--update|--update=*|--update-*|--updateSnapshot|--snapshot-update|--apply|--apply-*)
+        cl_add 3 fix_flag "$w en los argumentos" ;;
       -w) case $tool in npm|pnpm|yarn|bun) ;; *) cl_add 3 fix_flag "-w en los argumentos" ;; esac ;;
     esac
-    if [[ $w =~ ^[0-9]*\>\>?(.*)$ ]]; then
+    if [[ $w =~ ^[0-9\&]*\>\>?(.*)$ ]]; then
       rd=${BASH_REMATCH[1]}
       case $rd in /dev/null|\&*) rd="" ;; esac
       [ -z "$rd" ] || cl_add 2 redirect "redirección a $rd"
-    elif [[ $prev =~ ^[0-9]*\>\>?$ ]]; then
-      case $w in /dev/null|\&*) ;; *) cl_add 2 redirect "redirección a $w" ;; esac
+    elif [[ $prev =~ ^[0-9\&]*\>[\>\&]?$ ]]; then
+      case $w in /dev/null|\&*|[0-9]|-) ;; *) cl_add 2 redirect "redirección a $w" ;; esac
     fi
     prev=$w
   done
@@ -1931,8 +1943,15 @@ cl_seg() {   # cl_seg <depth> <palabras…>
       for w in "${@:2}"; do cl_word "$w" "los argumentos"; done
       return ;;
     go|cargo)
-      cl_add 1 read_only_tool "$tool"
-      for w in "${@:2}"; do cl_word "$w" "los argumentos"; done
+      case ${2:-} in
+        test|vet|check|clippy|list|version|doc) cl_add 1 read_only_tool "$tool $2" ;;
+        fmt|fix|mod|get|tidy|update) cl_add 3 writes_tool "$tool $2 modifica fuentes o manifiestos" ;;
+        install) cl_add 4 install "$tool install" ;;
+        build|generate) cl_add 2 generate "$tool $2" ;;
+        publish) cl_add 6 external "$tool publish" ;;
+        *) cl_add 5 unknown_tool "subcomando de $tool no analizado: ${2:-}" ;;
+      esac
+      for w in "${@:3}"; do cl_word "$w" "los argumentos"; done
       return ;;
   esac
   case $1 in
