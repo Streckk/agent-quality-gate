@@ -32,7 +32,7 @@
 
 ---
 
-### Tarea 1: Líneas base de diagnósticos en `qg` (P0)
+### Task 1: Líneas base de diagnósticos en `qg` (P0)
 
 **Archivos:**
 - Modificar: `bin/qg` (`run --baseline`, subcomando `baseline write`, evaluación en `status`, `QG_INTERFACE=4`, ayuda)
@@ -101,7 +101,7 @@
 - [ ] **Paso 4:** `bash tests/run_core_tests.sh` → PASS; `bash -n bin/qg`; `bash tests/validate.sh` sin regresiones.
 - [ ] **Paso 5: Commit** `feat(qg): líneas base de diagnósticos para errores heredados`.
 
-### Tarea 2: Clasificación previa de efectos secundarios con `qg classify` (P1)
+### Task 2: Clasificación previa de efectos secundarios con `qg classify` (P1)
 
 **Archivos:**
 - Modificar: `bin/qg` (subcomando `classify`, ayuda)
@@ -134,7 +134,7 @@
 - [ ] **Paso 2–4:** FAIL → implementar → PASS (`bash tests/run_core_tests.sh`).
 - [ ] **Paso 5: Commit** `feat(qg): clasificación previa de efectos secundarios de las verificaciones`.
 
-### Tarea 3: Reporte con varios repositorios (esquema 2) y coherencia veredicto/aprobaciones (P0)
+### Task 3: Reporte con varios repositorios (esquema 2) y coherencia veredicto/aprobaciones (P0)
 
 **Archivos:**
 - Modificar: `evals/lib/report.py`, `evals/evaluate.sh`
@@ -174,7 +174,7 @@
 - [ ] **Paso 2–4:** FAIL → implementar → PASS (`bash tests/run_eval_tests.sh`).
 - [ ] **Paso 5: Commit** `feat(evals): reporte de varios repositorios (esquema 2) y coherencia con aprobaciones`.
 
-### Tarea 4: Segunda revisión acotada de correcciones críticas (P1)
+### Task 4: Segunda revisión acotada de correcciones críticas (P1)
 
 **Archivos:**
 - Modificar: `skills/quality-gate/references/agent-evals.md` (política y clasificación de hallazgos, P2), `skills/quality-gate/SKILL.md` (fase Review), `evals/evaluate.sh` (check `security_followup`), `evals/lib/trace.py` si hace falta extraer los comandos de Codex y las ediciones
@@ -215,7 +215,7 @@
 - [ ] **Paso 2–4:** FAIL → implementar → PASS (`bash tests/run_eval_tests.sh`).
 - [ ] **Paso 5: Commit** `feat(evals): segunda revisión acotada de correcciones críticas`.
 
-### Tarea 5: Skill, referencias y documentación (P1 y P2)
+### Task 5: Skill, referencias y documentación (P1 y P2)
 
 **Archivos:**
 - Modificar:
@@ -252,7 +252,7 @@
 - [ ] **Paso 2:** `bash tests/validate.sh` y `bash tests/validate_selftest.sh` → PASS (si validan enlaces y estructura, ajustar).
 - [ ] **Paso 3: Commit** `docs: líneas base, varios repositorios, segunda revisión y efectos secundarios`.
 
-### Tarea 6: Validación completa e informe de validación
+### Task 6: Validación completa e informe de validación
 
 **Archivos:**
 - Crear: `docs/validacion-v0.2.0-iteracion-uso-real.md`
