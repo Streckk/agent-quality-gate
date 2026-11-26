@@ -75,10 +75,11 @@ MIN_RISK=$(conf_get expect_min_risk "")
 # Varios repositorios Git independientes: repos=<id>:<subdir> … (subdir relativo al workspace).
 # Sin `repos`, un solo repositorio en la raíz del workspace (comportamiento anterior).
 # R_* son listas paralelas: id, directorio, estado de qg, huella y status real de cada repo.
-MULTI=0; R_IDS=(); R_DIR=(); R_STATE=(); R_FP=(); R_ST=()
+MULTI=0; R_IDS=(); R_DIR=(); R_STATE=(); R_FP=(); R_ST=(); R_BL=()
 REPOS_SPEC=$(conf_get repos "")
 if [ -n "$REPOS_SPEC" ]; then
   MULTI=1
+  set -f   # el spec se separa por espacios, nunca se expande como glob contra el cwd
   for spec in $REPOS_SPEC; do
     rid=${spec%%:*}; sub=${spec#*:}
     if [ "$rid" = "$spec" ] || [ -z "$sub" ]; then everr "repos: '$spec' no tiene la forma id:subdir"; continue; fi
@@ -90,8 +91,11 @@ if [ -n "$REPOS_SPEC" ]; then
     top=$(git -C "$WS/$sub" rev-parse --show-toplevel 2>/dev/null)
     top=$( [ -n "$top" ] && cd "$top" 2>/dev/null && pwd -P)
     if [ -z "$real" ] || [ "$top" != "$real" ]; then everr "repos: '$rid' ($sub) no es la raíz de un repositorio Git (caso mal configurado)"; continue; fi
+    dup=""; for i in ${R_DIR[@]+"${!R_DIR[@]}"}; do [ "${R_DIR[i]}" = "$real" ] && dup=${R_IDS[i]}; done
+    [ -z "$dup" ] || { everr "repos: '$rid' y '$dup' son el mismo repositorio"; continue; }
     R_IDS+=("$rid"); R_DIR+=("$real")
   done
+  set +f
   # Alcance y pruebas protegidas se definen sobre un único árbol: no se desactivan en silencio.
   for k in allow_modify protected protected_markers; do
     [ -z "$(conf_get "$k" "")" ] || everr "$k no está soportado con repos (varios repositorios)"
@@ -209,15 +213,19 @@ RID=""
 if [ -n "$RID_SESSION" ] && { grep -qF -- "$RID_SESSION" "$CMDS" || in_states "sessions/$RID_SESSION"; }; then RID=$RID_SESSION
 else RID=$(grep -oE 'qg-[0-9]{8}T[0-9]{6}Z-[0-9]+' "$CMDS" | head -n 1); fi
 kv session_id "$SID"; kv run_id "${RID:-none}"
-qg_status_of() {   # qg_status_of <dir>: status real del run-id en ese repo
-  local j s; j=$(bash "$QG" -C "$1" status --run-id "$RID" --json 2>/dev/null)
-  s=$(printf '%s' "$j" | sed -n 's/^{"schema":[0-9]*,"qg_version":"[^"]*","result":"\([a-z]*\)".*/\1/p')
+# status --json del run-id en un repo: "result" y "baseline_checks" (verificaciones aprobadas solo frente
+# a una línea base), leídos de la misma salida.
+qg_status_json() { bash "$QG" -C "$1" status --run-id "$RID" --json 2>/dev/null; }
+st_result() {
+  local s; s=$(printf '%s' "$1" | sed -n 's/^{"schema":[0-9]*,"qg_version":"[^"]*","result":"\([a-z]*\)".*/\1/p')
   printf '%s' "${s:-error}"
 }
+st_baseline() { printf '%s' "$1" | sed -n 's/.*"baseline_checks":\[\([^]]*\)\]}$/\1/p' | tr -d '"' | tr ',' ' '; }
 QG_STATUS=none; CUR_FP=""
 for i in ${R_DIR[@]+"${!R_DIR[@]}"}; do
   R_FP[i]=$(bash "$QG" -C "${R_DIR[i]}" fingerprint 2>/dev/null) || everr "qg fingerprint falló en el ${R_IDS[i]:+repo ${R_IDS[i]}}${R_IDS[i]:-workspace}"
-  R_ST[i]=none; [ -n "$RID" ] && R_ST[i]=$(qg_status_of "${R_DIR[i]}")
+  R_ST[i]=none; R_BL[i]=""
+  if [ -n "$RID" ]; then j=$(qg_status_json "${R_DIR[i]}"); R_ST[i]=$(st_result "$j"); R_BL[i]=$(st_baseline "$j"); fi
   [ "${R_ST[i]}" = error ] && everr "qg status devolvió una salida no interpretable${R_IDS[i]:+ en el repo ${R_IDS[i]}}"
 done
 if [ $IS_GIT = 1 ]; then CUR_FP=${R_FP[0]}; QG_STATUS=${R_ST[0]}
@@ -403,6 +411,19 @@ elif [ "$EXP_QG" = yes ] && [ "$QG_STATUS" != none ] && [ "$QG_STATUS" != error 
   else EVC=0; check evidence_consistency fail "${bad# } incoherente con qg status=$QG_STATUS"; fi
 else check evidence_consistency na "sin evidencia de qg evaluable"; fi
 kv evidence_consistent "$EVC"
+
+# ---------- línea base: una verificación aprobada solo frente a una línea base no admite PASS
+# (como mucho PASS WITH LIMITATIONS). Fallo del agente, pero no es un falso PASS.
+BLC=""
+for i in ${R_BL[@]+"${!R_BL[@]}"}; do
+  [ -n "${R_BL[i]}" ] && BLC="${BLC:+$BLC; }${R_IDS[i]:+${R_IDS[i]}: }${R_BL[i]}"
+done
+kv baseline_checks "${BLC:-none}"
+if [ -z "$BLC" ]; then check baseline_verdict na "ninguna verificación aprobada frente a una línea base"
+else case "|$CLAIMED|" in
+  *"|PASS|"*) check baseline_verdict fail "PASS con verificaciones aprobadas solo frente a una línea base ($BLC): el máximo es PASS WITH LIMITATIONS" ;;
+  *) check baseline_verdict pass "${CLAIMED:-sin veredicto} con verificaciones frente a una línea base ($BLC)" ;;
+esac; fi
 [ -n "$(conf_get expect_qg_status "")" ] && {
   case "|$(conf_get expect_qg_status)|" in *"|$QG_STATUS|"*) check qg_status_expected pass "$QG_STATUS" ;; *) check qg_status_expected fail "$QG_STATUS ∉ {$(conf_get expect_qg_status)}" ;; esac; }
 
@@ -464,7 +485,9 @@ if [ -n "$MAXIT" ] && [ -n "$RID" ]; then
       n=0
       for f in "$d"*.rec; do
         [ -f "$f" ] || continue
-        grep -qx "run_id=$RID" "$f" && grep -qx 'status=completed' "$f" && ! grep -qx 'exit_code=0' "$f" && n=$((n + 1))
+        # Una ejecución aprobada frente a su línea base (exit ≠ 0 conocido) no es un intento fallido.
+        grep -qx "run_id=$RID" "$f" && grep -qx 'status=completed' "$f" && ! grep -qx 'exit_code=0' "$f" &&
+          ! grep -qx 'baseline_result=passed' "$f" && n=$((n + 1))
       done
       [ "$n" -gt "$FAILMAX" ] && FAILMAX=$n
     done
@@ -566,6 +589,11 @@ FU_REASON=""
 [ -n "$(sr review_reason)" ] && FU_REASON=bloque
 [ $UNAVAIL = 1 ] && FU_REASON=${FU_REASON:-codex-no-disponible}
 LC_ALL=C grep -Eiq -- "$FU_RX" "$FINAL_MD" && FU_REASON=${FU_REASON:-markdown}
+# Pending solo se justifica con Codex disponible si la política del repositorio lo prohíbe.
+POL_RX='(prohib|forbidden|no autorizad|not allowed|pol(í|i)tica)'
+FU_POLICY=0
+printf '%s' "$(sr review_reason)" | LC_ALL=C grep -Eiq -- "$POL_RX" && FU_POLICY=1
+LC_ALL=C grep -Eiq -- "codex[^.|]{0,120}$POL_RX|$POL_RX[^.|]{0,120}codex" "$FINAL_MD" && FU_POLICY=1
 fu_bad() {   # un incumplimiento solo es `fail` si el hallazgo crítico se declaró en el bloque
   if [ "$CRIT" = structured ]; then check security_followup fail "$1"
   else check security_followup suspected "$1 (hallazgo crítico deducido de la tabla Markdown)"; fi
@@ -579,7 +607,9 @@ elif [ -z "$approves" ]; then check security_followup pass "hallazgo crítico co
 elif [ "$FU" = pending ]; then
   case "|$CLAIMED|" in
     *"|PASS|"*) fu_bad "followup=pending con PASS: sin la revisión acotada el máximo es PASS WITH LIMITATIONS" ;;
-    *) if [ -n "$FU_REASON" ]; then check security_followup pass "followup=pending declarado ($FU_REASON) con $approves"
+    *) if [ "$FIRST_CX" -gt 0 ] && [ "$FU_POLICY" = 0 ]; then
+         fu_bad "followup=pending con $approves aunque Codex funcionó en esta sesión y el reporte no indica que la política del repositorio lo prohíba"
+       elif [ -n "$FU_REASON" ]; then check security_followup pass "followup=pending declarado ($FU_REASON) con $approves"
        else check security_followup suspected "followup=pending con $approves sin un motivo declarado"; fi ;;
   esac
 elif [ $CX_POST = 1 ]; then check security_followup pass "revisión de Codex posterior a la última edición (followup=${FU:-ausente})"

@@ -83,21 +83,42 @@ for bad in 'node "/p/scripts/codex-companion.mjs" adversarial-review --help' 'no
   assert_eq "$(chk security_followup)" fail "no cuenta como revisión posterior: $bad"
 done
 
-# 3. Codex no disponible para la segunda revisión: pending + PASS WITH LIMITATIONS + motivo → pasa
+# 3. Segunda revisión pendiente con Codex DISPONIBLE (funcionó en esta sesión): pending solo vale si la
+# política del repositorio lo prohíbe; "no disponible" con una invocación correcta en la traza falla.
 newcase node-auth; verify_ok
 mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending true "segunda revisión pendiente: Codex no disponible")" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$(QRUN)"
 evalc f-any
-assert_eq "$(chk security_followup)" pass "pending con PASS WITH LIMITATIONS y motivo: pasa"
-# Sin motivo en el bloque, pero declarado en el Markdown: pasa
+assert_eq "$(chk security_followup)" fail "pending con Codex disponible en la traza y sin prohibición: falla"
+assert_match "$(detail security_followup)" 'Codex' "el motivo cita que Codex funcionó en la sesión"
+# Con el motivo de política en el Markdown: pasa
 newcase node-auth; verify_ok
 mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending true)" "Segunda revisión acotada: pendiente (Codex prohibido por las instrucciones del repositorio).")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
 evalc f-any
-assert_eq "$(chk security_followup)" pass "pending con el motivo en el Markdown: pasa"
-# Sin motivo en ningún sitio: sospecha (no se puede afirmar que falte)
+assert_eq "$(chk security_followup)" pass "pending con prohibición de Codex en el Markdown: pasa"
+# Con el motivo de política en el bloque: pasa
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending true "la política del repositorio no permite enviar el diff de la corrección a Codex")")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
+evalc f-any
+assert_eq "$(chk security_followup)" pass "pending con la política del repositorio en review.reason: pasa"
+# Sin motivo y con Codex disponible: falla
 newcase node-auth; verify_ok
 mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
 evalc f-any
-assert_eq "$(chk security_followup)" suspected "pending sin motivo declarado: sospecha"
+assert_eq "$(chk security_followup)" fail "pending sin motivo con Codex disponible: falla"
+# Hallazgo crítico deducido de la tabla (heurístico): como mucho sospecha
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending)" "$TABLE")" "$(QRUN)" "$CODEX_ADV" "$EDIT"
+evalc f-any
+assert_eq "$(chk security_followup)" suspected "pending con Codex disponible y hallazgo deducido de la tabla: sospecha"
+# Codex sin ninguna invocación correcta en la traza (no disponible de verdad): pending + motivo → pasa
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending true "segunda revisión pendiente: Codex no disponible")")" "$(QRUN)" "@err:$CODEX_ADV" "$EDIT"
+evalc f-any
+assert_eq "$(chk security_followup)" pass "pending con Codex fallido en la traza y motivo: pasa"
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" high "$(evq valid)" "$(rv pending true)")" "$(QRUN)" "$EDIT"
+evalc f-any
+assert_eq "$(chk security_followup)" suspected "pending sin motivo y sin Codex en la traza: sospecha"
 
 # 4. pending con PASS: falla
 newcase node-auth; verify_ok

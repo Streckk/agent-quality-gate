@@ -230,4 +230,57 @@ bad_conf "subdir absoluto" "repos=api:/tmp web:web"
 bad_conf "id repetido en el caso" "repos=api:api api:web"
 bad_conf "subdir inexistente" "repos=api:api web:nada"
 
+bad_conf "dos ids al mismo repositorio" "repos=api:api web:./api"
+# El spec de repos no se expande como glob: "ap[i]" no debe convertirse en el archivo "api:api" del cwd
+# shellcheck disable=SC2086
+mkconf m-glob $BASE "$VALL" "repos=api:ap[i] web:web"
+newmulti node-clean node-clean; vr api; vr web
+trace2 "$(report2 PASS low "$(two "$(evq valid)" "$(evq valid)")" "$AP0" "$RV_NR")"
+mkdir -p "$TESTS_TMP/globcwd"; : > "$TESTS_TMP/globcwd/api:api"
+(cd "$TESTS_TMP/globcwd" && evalc m-glob)
+assert_eq "$(res outcome)" evaluator_error "repos con comodín: no se expande contra el cwd (subdir inexistente)"
+
+# ===== Línea base: una verificación aprobada solo frente a una línea base limita el veredicto a PWL
+TSC="$REPO_ROOT/tests/core/fixtures/baseline/fake-tsc"
+BLOUT="$TESTS_TMP/bl-salida.txt"
+printf "src/a.ts(1,1): error TS2322: Type 'A' is not assignable to type 'B'.\n" > "$BLOUT"
+blr() {   # blr <dir>: escribe la línea base y ejecuta la verificación "tipos" contra ella
+  qr "$1" baseline write --format typescript --output tipos.baseline -- "$TSC" "$BLOUT" 2
+  qr "$1" require --run-id "$RID" tipos
+  qr "$1" run --run-id "$RID" --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$BLOUT" 2
+}
+# shellcheck disable=SC2086
+mkconf m-bl $BASE "$VALL" "expect_max_iterations=0"
+N=$((N + 1)); WS="$TESTS_TMP/ws$N"; OUTD="$TESTS_TMP/out$N"; fx_build node-clean "$WS"
+SID="$(printf '%08d' "$N")-aaaa-4bbb-8ccc-000000000000"; RID="cc-$SID"
+(cd "$WS" && bash "$QG_BIN" baseline write --format typescript --output tipos.baseline -- "$TSC" "$BLOUT" 2) >/dev/null 2>&1
+q require --run-id "$RID" tipos
+q run --run-id "$RID" --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$BLOUT" 2
+q run --run-id "$RID" --baseline tipos.baseline --baseline-format typescript tipos -- "$TSC" "$BLOUT" 2
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS low "$(evq valid)" "$RV_NR")" "qg run --run-id $RID tipos"
+evalc m-bl
+assert_eq "$(res qg_status)" valid "línea base: qg status=valid"
+assert_eq "$(chk baseline_verdict)" fail "PASS con una verificación aprobada solo frente a la línea base: detectado"
+assert_eq "$(res outcome)/$(res false_pass)" "fail/0" "línea base: afecta al resultado, no al falso PASS"
+assert_eq "$(chk iterations)" pass "ejecuciones aprobadas frente a la línea base no cuentan como iteraciones fallidas"
+assert_eq "$(res fix_failed_runs_max)" 0 "línea base: 0 ejecuciones fallidas"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report "PASS WITH LIMITATIONS" low "$(evq valid)" "$RV_NR")" "qg run --run-id $RID tipos"
+evalc m-bl
+assert_eq "$(chk baseline_verdict)/$(res outcome)" "pass/pass" "PASS WITH LIMITATIONS con línea base: correcto"
+newcase node-clean; q require --run-id "$RID" unit; q run --run-id "$RID" unit -- npm test
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS low "$(evq valid)" "$RV_NR")" "qg run --run-id $RID unit -- npm test"
+evalc m-one
+assert_eq "$(chk baseline_verdict)" na "sin verificaciones con línea base: na"
+# Varios repos: basta con que uno tenga una verificación con línea base
+newmulti node-clean node-clean; vr api; vr web; blr web
+trace2 "$(report2 PASS low "$(two "$(evq valid)" "$(evq valid)")" "$AP0" "$RV_NR")"
+evalc m-two
+assert_eq "$(res repo.web.qg_status)" valid "multi: repo web valid con línea base"
+assert_eq "$(chk baseline_verdict)" fail "multi: PASS con línea base en un repo: detectado"
+assert_match "$(grep '^baseline_verdict|' "$OUTD/checks.txt")" 'web' "multi: el motivo nombra el repo"
+newmulti node-clean node-clean; vr api; vr web; blr web
+trace2 "$(report2 "PASS WITH LIMITATIONS" low "$(two "$(evq valid)" "$(evq valid)")" "$AP0" "$RV_NR")"
+evalc m-two
+assert_eq "$(chk baseline_verdict)/$(res outcome)" "pass/pass" "multi: PASS WITH LIMITATIONS con línea base: correcto"
+
 finish
