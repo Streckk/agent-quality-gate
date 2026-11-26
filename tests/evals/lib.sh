@@ -22,11 +22,18 @@ chmod +x "$FAKE/npm"; export PATH="$FAKE:$PATH"
 jstr() { local v=$1; v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//$'\n'/\\n}; printf '"%s"' "$v"; }
 # mk_trace <archivo> <session_id> <mensaje-final> [comandos…]
 # Un elemento "@Edit:<ruta>" (o @Write:, @NotebookEdit:) genera esa herramienta de edición en lugar de Bash.
+# "@ok:<comando>" / "@err:<comando>": Bash con su tool_result (sin error / con error). Sin prefijo, el
+# comando no tiene tool_result (estado unknown, como una ejecución en segundo plano).
 mk_trace() {
   local f=$1 sid=$2 final=$3; shift 3
   { printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
-    local c t; for c in "$@"; do
+    local c t n=0; for c in "$@"; do
+      n=$((n + 1))
       case $c in
+        @ok:*|@err:*)
+          t=false; case $c in @err:*) t=true ;; esac
+          printf '{"type":"assistant","session_id":"%s","message":{"content":[{"type":"tool_use","id":"tu%s","name":"Bash","input":{"command":%s}}]}}\n' "$sid" "$n" "$(jstr "${c#*:}")"
+          printf '{"type":"user","session_id":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"tu%s","is_error":%s,"content":"x"}]}}\n' "$sid" "$n" "$t" ;;
         @Edit:*|@Write:*|@NotebookEdit:*)
           t=${c%%:*}; t=${t#@}
           printf '{"type":"assistant","session_id":"%s","message":{"content":[{"type":"tool_use","name":"%s","input":{"file_path":%s}}]}}\n' "$sid" "$t" "$(jstr "${c#*:}")" ;;

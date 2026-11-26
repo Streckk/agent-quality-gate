@@ -103,7 +103,7 @@ Cada hallazgo es una **hipótesis**:
 
 **Si Codex no está disponible o está prohibido:** `followup: pending`, declara la limitación con su motivo (`review.reason` o el texto del reporte) y el veredicto máximo es `PASS WITH LIMITATIONS`. Una auto-revisión no cuenta como independiente.
 
-Las Agent Evals lo comprueban con el check `security_followup`: si el reporte declara una corrección crítica y aprueba (`PASS` o `PASS WITH LIMITATIONS`), tiene que haber una invocación de Codex posterior a la última edición, o `followup: pending` con un veredicto no superior a `PASS WITH LIMITATIONS`.
+Las Agent Evals lo comprueban con el check `security_followup`: si el reporte declara una corrección crítica y aprueba (`PASS` o `PASS WITH LIMITATIONS`), tiene que haber una invocación de Codex posterior a la última edición, o `followup: pending` con un veredicto no superior a `PASS WITH LIMITATIONS`. El check solo comprueba que esa invocación existe y no terminó con error; no comprueba `--base`, el alcance ni lo que dijo el revisor. Eso sigue siendo responsabilidad tuya. Si lanzas la revisión con `--background`, lee su resultado completo antes de declarar `followup: done`.
 
 ## 6. Aislamiento entre agentes
 

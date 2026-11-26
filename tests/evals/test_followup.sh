@@ -52,7 +52,7 @@ assert_eq "$(chk security_followup)" pass "revisión acotada después de la últ
 assert_eq "$(res outcome)" pass "el caso completo pasa"
 # Variante: slash command registrado en la traza
 newcase node-auth; verify_ok
-mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "@Write:src/auth/token.js" "echo '/codex:adversarial-review --base abc1234'"
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "@Write:src/auth/token.js" "/codex:adversarial-review --base abc1234 corrección de verify()"
 evalc f-any
 assert_eq "$(chk security_followup)" pass "/codex:adversarial-review posterior a un Write: pasa"
 # Una edición DESPUÉS de la revisión acotada la invalida
@@ -60,6 +60,28 @@ newcase node-auth; verify_ok
 mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$CODEX_FU" "$EDIT"
 evalc f-any
 assert_eq "$(chk security_followup)" fail "edición posterior a la revisión acotada: falla"
+
+# El estado del tool_result cuenta: una invocación posterior que falló no es una revisión
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "@err:$CODEX_FU"
+evalc f-any
+assert_eq "$(chk security_followup)" fail "revisión posterior con tool_result de error: no cuenta"
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "@ok:$CODEX_FU"
+evalc f-any
+assert_eq "$(chk security_followup)" pass "revisión posterior terminada sin error: pasa"
+newcase node-auth; verify_ok
+mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "@ok:$CODEX_ADV" "$EDIT" "$CODEX_FU --background"
+evalc f-any
+assert_eq "$(chk security_followup)" pass "revisión posterior sin tool_result (segundo plano, unknown): pasa"
+# Solo invocaciones reales de revisión: --help/-h, otra subcomando o /codex: dentro de otro texto no cuentan
+for bad in 'node "/p/scripts/codex-companion.mjs" adversarial-review --help' 'node "/p/scripts/codex-companion.mjs" review -h' \
+           'node "/p/scripts/codex-companion.mjs" reviewers --wait' "echo 'hecho: /codex:adversarial-review'"; do
+  newcase node-auth; verify_ok
+  mk_trace "$TESTS_TMP/trace$N.jsonl" "$SID" "$(report PASS high "$(evq valid)" "$(rv done true)")" "$(QRUN)" "$CODEX_ADV" "$EDIT" "$bad"
+  evalc f-any
+  assert_eq "$(chk security_followup)" fail "no cuenta como revisión posterior: $bad"
+done
 
 # 3. Codex no disponible para la segunda revisión: pending + PASS WITH LIMITATIONS + motivo → pasa
 newcase node-auth; verify_ok

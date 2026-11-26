@@ -6,8 +6,9 @@ Escribe en el directorio:
   commands.txt   un comando Bash ejecutado por línea (saltos de línea internos → " ⏎ ")
   commands_status.txt  alineado con commands.txt: ok (tool_result sin error), error o unknown
   skills.txt     una skill invocada por línea
-  tools.txt      todas las herramientas usadas, en orden: "<herramienta>|<detalle>" (Bash → comando,
-                 Edit/MultiEdit/Write/NotebookEdit → ruta editada, Skill → nombre; vacío en las demás)
+  tools.txt      todas las herramientas usadas, en orden: "<herramienta>|<detalle>" (Edit/MultiEdit/
+                 Write/NotebookEdit → ruta editada, Skill → nombre; vacío en las demás). Bash lleva además
+                 el estado de su tool_result: "Bash|<ok|error|unknown>|<comando>"
   final.txt      el mensaje final (texto del evento result o, si falta, el último mensaje del asistente)
 Solo biblioteca estándar. No ejecuta nada de la traza. Sale con 2 si la traza no existe o está vacía.
 """
@@ -69,7 +70,7 @@ def main():
                             det = inp.get("skill")
                         else:
                             det = ""
-                        tools.append((name, det if isinstance(det, str) else ""))
+                        tools.append((name, det if isinstance(det, str) else "", str(c.get("id", ""))))
                         if c.get("name") == "Bash" and isinstance(inp.get("command"), str):
                             commands.append(inp["command"])
                             bash_ids.append(str(c.get("id", "")))
@@ -110,8 +111,11 @@ def main():
         for s in skills:
             fh.write(clean(s) + "\n")
     with open(os.path.join(out, "tools.txt"), "w", encoding="utf-8") as fh:
-        for n, d in tools:
-            fh.write(clean(n).replace("|", "/") + "|" + d.replace("\r", "").replace("\n", " ⏎ ") + "\n")
+        for n, d, i in tools:
+            n = clean(n).replace("|", "/")
+            if n == "Bash":
+                n += "|" + results.get(i, "unknown")
+            fh.write(n + "|" + d.replace("\r", "").replace("\n", " ⏎ ") + "\n")
     with open(os.path.join(out, "final.txt"), "w", encoding="utf-8") as fh:
         fh.write(text or "")
     return 0

@@ -542,9 +542,11 @@ if [ -n "$SIM" ]; then check codex_not_simulated fail "$SIM"; else check codex_n
 # Ediciones: herramientas Edit/MultiEdit/Write/NotebookEdit de la traza. Las modificaciones hechas con
 # Bash (sed -i, redirecciones…) no se detectan: si no hay ninguna edición observable después de la
 # primera revisión, el check es `inconclusive`, nunca `pass`.
-# Invocaciones de Codex: comandos Bash con codex-companion.mjs review|adversarial-review o /codex:….
-CX_RX='codex-companion\.mjs"?[[:space:]]+(review|adversarial-review)|/codex:(review|adversarial-review)'
-CX_LINES=$(LC_ALL=C grep -nE '^Bash\|' "$TOOLS" | LC_ALL=C grep -E -- "$CX_RX" | cut -d: -f1)
+# Invocaciones de Codex: comandos Bash con `codex-companion.mjs review|adversarial-review` o que empiezan
+# por `/codex:review|adversarial-review`, cuyo tool_result no fue error (ok, o unknown: segundo plano).
+# No cuentan `--help`/`-h` ni otros subcomandos (`reviewers…`). No se comprueban --base, alcance ni resultado.
+CX_RX='^Bash\|(ok|unknown)\|(.*codex-companion\.mjs"?[[:space:]]+(review|adversarial-review)|[[:space:]]*/codex:(review|adversarial-review))([[:space:]]|$)'
+CX_LINES=$(LC_ALL=C grep -nE -- "$CX_RX" "$TOOLS" | LC_ALL=C grep -vE '[[:space:]](--help|-h)([[:space:]]|$)' | cut -d: -f1)
 FIRST_CX=$(printf '%s\n' "$CX_LINES" | sed -n '1p'); FIRST_CX=${FIRST_CX:-0}
 LAST_CX=$(printf '%s\n' "$CX_LINES" | sed -n '$p'); LAST_CX=${LAST_CX:-0}
 LAST_ED=$(LC_ALL=C grep -nE '^(Edit|MultiEdit|Write|NotebookEdit)\|' "$TOOLS" | cut -d: -f1 | sed -n '$p'); LAST_ED=${LAST_ED:-0}
