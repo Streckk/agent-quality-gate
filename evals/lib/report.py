@@ -9,12 +9,14 @@ comprueba la forma. evaluate.sh contrasta las afirmaciones con qg, los registros
 Esquema 1: un repositorio, objeto "evidence" en la raíz. Esquema 2 (obligatorio con varios
 repositorios): sin "evidence" en la raíz; "repos" = [{"id", "evidence"}] (1-16, ids únicos, el id es
 una etiqueta y no una ruta) y "approvals" = {"pending_required", "pending_optional"} obligatorio.
-Ambos admiten "review.followup" (done|pending|not_required); el esquema 1 admite "approvals" opcional.
+Ambos admiten "review.followup" (done|pending|not_required) y "review.critical_fixed" (booleano: se
+corrigió un hallazgo confirmado de categoría crítica); el esquema 1 admite "approvals" opcional.
 En el esquema 2 ningún texto del bloque puede contener una ruta absoluta.
 
 Salida (clave=valor):
   block=absent|present   blocks=<n>   valid=1|0   error=<motivo>   schema=1|2
   verdict, risk, review_status, review_kind, review_reason, review_followup,
+  review_critical_fixed (true|false, vacío si no se declara),
   approvals_pending_required, approvals_pending_optional (vacíos si no se declaran)
   repos=<n> y, por repo (i desde 1), repo.<i>.id (vacío en el esquema 1) y
   repo.<i>.evidence_provider|evidence_run_id|evidence_status|evidence_fingerprint|evidence_reason
@@ -171,6 +173,10 @@ def validate(doc):
     out["review_kind"] = enum(rv, "kind", REVIEW_KINDS, required=(st == "done"))
     out["review_reason"] = text(rv, "reason", st == "skipped")
     out["review_followup"] = enum(rv, "followup", FOLLOWUPS, required=False)
+    cf = rv.get("critical_fixed")
+    if cf is not None and not isinstance(cf, bool):
+        raise Invalid("review.critical_fixed debe ser booleano")
+    out["review_critical_fixed"] = "" if cf is None else ("true" if cf else "false")
     return out
 
 

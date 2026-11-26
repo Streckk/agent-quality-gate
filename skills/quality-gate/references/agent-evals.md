@@ -55,7 +55,7 @@ Privacidad: la revisión envía el diff a un servicio externo (OpenAI). Si las i
 
 La config opcional puede ajustar umbrales (`review.min_risk_for_review`, `review.adversarial_at`). Revisiones largas: si el diff es grande, ejecútalas en segundo plano y continúa con otras verificaciones; no esperes en bucle.
 
-Orden: revisa **después** de que las verificaciones pasen, sobre el código final. Si corriges hallazgos de la revisión, reejecuta las verificaciones afectadas (con `qg run` si está disponible; la edición deja la evidencia anterior `stale`). No hace falta repetir la revisión salvo que la corrección sea amplia. La revisión de Codex **no** se registra como verificación de `qg` ni sustituye a ninguna obligatoria.
+Orden: revisa **después** de que las verificaciones pasen, sobre el código final. Si corriges hallazgos de la revisión, reejecuta las verificaciones afectadas (con `qg run` si está disponible; la edición deja la evidencia anterior `stale`). No hace falta repetir la revisión completa salvo que la corrección sea amplia; la corrección de un hallazgo **crítico** exige la revisión acotada de §5. La revisión de Codex **no** se registra como verificación de `qg` ni sustituye a ninguna obligatoria.
 
 ## 3. Criterios que se piden al revisor
 
@@ -74,14 +74,42 @@ Cada hallazgo es una **hipótesis**:
 
 1. Reprodúcelo o compruébalo en el código (leer la ruta, escribir un test que falle, ejecutar un caso).
 2. Clasifícalo: `confirmed` | `rejected` (con motivo) | `needs-human` (depende de intención de producto o de información no disponible).
-3. Corrige solo los `confirmed` dentro del alcance, aplicando el mismo límite de iteraciones de [feedback-loops](feedback-loops.md), y reejecuta las verificaciones afectadas.
-4. No aceptes sugerencias sin fundamento ni reescrituras de estilo no pedidas.
+3. Indica en el reporte **cómo** se sostiene cada hallazgo:
+   - **por lectura de código**: se ve en el código, sin ejecutarlo;
+   - **reproducido con una prueba**: un test o un caso lo demuestra;
+   - **confirmado con otra evidencia**: logs, salida de un comando, documentación del proyecto;
+   - **pendiente de confirmación**: no se pudo comprobar todavía;
+   - **revisión impedida por el sandbox**: el revisor no pudo ejecutar lo necesario.
 
-## 5. Aislamiento entre agentes
+   Un hallazgo "por lectura" que el sandbox impidió probar **no** se invalida: intenta reproducirlo tú.
+4. Corrige solo los `confirmed` dentro del alcance, aplicando el mismo límite de iteraciones de [feedback-loops](feedback-loops.md), y reejecuta las verificaciones afectadas.
+5. No aceptes sugerencias sin fundamento ni reescrituras de estilo no pedidas.
+
+## 5. Segunda revisión acotada tras corregir un hallazgo crítico
+
+**Cuándo aplica** (las tres condiciones a la vez):
+
+- hay un hallazgo `confirmed` de una categoría crítica: auth, autorización, multi-tenant, concurrencia, idempotencia, secretos, operaciones críticas de datos, o severidad alta/crítica;
+- el hallazgo se corrigió;
+- la revisión independiente está disponible y autorizada.
+
+**Qué exige, en este orden:**
+
+1. Reejecutar las verificaciones afectadas.
+2. Una revisión independiente **acotada al diff de la corrección**, una sola vez: `adversarial-review` con el texto de foco del hallazgo y `--base <commit previo a la corrección>`, por ejemplo `node "<installPath>/scripts/codex-companion.mjs" adversarial-review --wait --base <commit> "<foco del hallazgo>"`. Si no puedes aislar el diff de la corrección, dilo en el reporte.
+3. Registrar el resultado en el bloque estructurado: `review.critical_fixed: true` y `review.followup` (`done` | `pending` | `not_required`).
+
+**Sin ciclos.** Si la revisión acotada encuentra un problema nuevo Important o Critical, no hay otra ronda automática: para y repórtalo (veredicto `BLOCKED` o `FAIL` según el caso, con decisión humana). El límite de 2 iteraciones de corrección no cambia.
+
+**Si Codex no está disponible o está prohibido:** `followup: pending`, declara la limitación con su motivo (`review.reason` o el texto del reporte) y el veredicto máximo es `PASS WITH LIMITATIONS`. Una auto-revisión no cuenta como independiente.
+
+Las Agent Evals lo comprueban con el check `security_followup`: si el reporte declara una corrección crítica y aprueba (`PASS` o `PASS WITH LIMITATIONS`), tiene que haber una invocación de Codex posterior a la última edición, o `followup: pending` con un veredicto no superior a `PASS WITH LIMITATIONS`.
+
+## 6. Aislamiento entre agentes
 
 - Nunca dos agentes editando los mismos archivos a la vez.
 - La revisión es de solo lectura. Si se delega **escritura** a otro agente (Codex `rescue`, subagentes), hazlo en un worktree aislado o de forma secuencial, y comprueba sus permisos antes.
 
-## 6. Sin Codex
+## 7. Sin Codex
 
 La puerta sigue funcionando. Reporta explícitamente `review: skipped (unavailable)` y, en riesgo `high`, añade como pendiente "revisión independiente no realizada" para que el humano decida. No sustituyas la revisión por una auto-revisión presentada como independiente; si haces una revisión propia, etiquétala como `self-review`.

@@ -120,7 +120,8 @@ if [ "$RUN_STATUS" = infra_error ]; then
   FINISHED=1; exit 0
 fi
 [ -z "$EVAL_ERR" ] || exit 1
-[ -f "$FINAL" ] || : > "$FINAL"; [ -f "$CMDS" ] || : > "$CMDS"; [ -f "$CSTAT" ] || : > "$CSTAT"
+TOOLS="$OUT/trace/tools.txt"
+[ -f "$FINAL" ] || : > "$FINAL"; [ -f "$CMDS" ] || : > "$CMDS"; [ -f "$CSTAT" ] || : > "$CSTAT"; [ -f "$TOOLS" ] || : > "$TOOLS"
 kv model "$(fact model)"
 
 # ---------- reporte: Markdown (sin los bloques ```json) y bloque estructurado
@@ -197,7 +198,7 @@ state_dir() {   # state_dir <dir-del-repo>
 STATE=""
 if [ $IS_GIT = 1 ]; then STATE=$(state_dir "$WS"); R_IDS=(""); R_DIR=("$WS"); R_STATE=("$STATE")
 elif [ $MULTI = 1 ]; then
-  for i in "${!R_DIR[@]}"; do R_STATE[i]=$(state_dir "${R_DIR[i]}") || everr "no se puede leer el estado de qg del repo ${R_IDS[i]}"; done
+  for i in ${R_DIR[@]+"${!R_DIR[@]}"}; do R_STATE[i]=$(state_dir "${R_DIR[i]}") || everr "no se puede leer el estado de qg del repo ${R_IDS[i]}"; done
 fi
 NREPOS=${#R_STATE[@]}
 in_states() {   # in_states <ruta-relativa>: ¿existe en el estado de qg de algún repo?
@@ -293,12 +294,12 @@ if [ "$SR_VALID" = 1 ]; then
     j=0
     while [ "$j" -lt "$SR_N" ]; do
       j=$((j + 1)); id=$(sr "repo\.$j\.id"); hit=""
-      for i in "${!R_IDS[@]}"; do [ "${R_IDS[i]}" = "$id" ] && hit=$i; done
+      for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do [ "${R_IDS[i]}" = "$id" ] && hit=$i; done
       if [ -z "$hit" ]; then why="${why:+$why; }repo desconocido en el bloque: $id"; continue; fi
       seen="$seen$id "
       w=$(ev_why "repo\.$j\." "$hit"); [ -z "$w" ] || why="${why:+$why; }$id: $w"
     done
-    for i in "${!R_IDS[@]}"; do
+    for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do
       case $seen in *" ${R_IDS[i]} "*) ;; *) why="${why:+$why; }falta el repo ${R_IDS[i]} en el bloque" ;; esac
     done
   fi
@@ -340,12 +341,12 @@ kv required_expected "$REQ_EXP"; kv required_executed "$REQ_EXEC"; kv required_d
 # failed → solo FAIL; blocked/incomplete → BLOCKED o FAIL; stale/missing (o sin run-id) → no aprueba.
 MR_NOAPPROVE=""
 if [ $MULTI = 1 ]; then
-  for i in "${!R_IDS[@]}"; do [ "${R_ST[i]}" = valid ] || MR_NOAPPROVE="$MR_NOAPPROVE ${R_IDS[i]}=${R_ST[i]}"; done
+  for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do [ "${R_ST[i]}" = valid ] || MR_NOAPPROVE="$MR_NOAPPROVE ${R_IDS[i]}=${R_ST[i]}"; done
   if [ -z "$CLAIMED" ]; then check multi_repo_verdict na "el reporte no contiene un veredicto reconocible"
   else
     bad=""; IFS='|' read -r -a CV <<< "$CLAIMED"
     for v in "${CV[@]}"; do
-      for i in "${!R_IDS[@]}"; do
+      for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do
         okv=1
         case ${R_ST[i]} in
           failed) [ "$v" = FAIL ] || okv=0 ;;
@@ -356,7 +357,7 @@ if [ $MULTI = 1 ]; then
         [ $okv = 1 ] || bad="${bad:+$bad; }$v con ${R_IDS[i]}=${R_ST[i]}"
       done
     done
-    if [ -z "$bad" ]; then check multi_repo_verdict pass "$CLAIMED coherente con los $NREPOS repos:$(for i in "${!R_IDS[@]}"; do printf ' %s=%s' "${R_IDS[i]}" "${R_ST[i]}"; done)"
+    if [ -z "$bad" ]; then check multi_repo_verdict pass "$CLAIMED coherente con los $NREPOS repos:$(for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do printf ' %s=%s' "${R_IDS[i]}" "${R_ST[i]}"; done)"
     else check multi_repo_verdict fail "$bad"; fi
   fi
 fi
@@ -535,6 +536,56 @@ SIM=""
 [ "$(sr review_kind)" = adversarial ] && [ "$AV" -eq 0 ] && [ "$(sr review_status)" = "done" ] && SIM="el bloque declara revisión adversarial no ejecutada"
 if [ -n "$SIM" ]; then check codex_not_simulated fail "$SIM"; else check codex_not_simulated pass "sin revisión simulada"; fi
 
+# ---------- segunda revisión acotada tras corregir un hallazgo crítico (security_followup)
+# Hallazgo crítico corregido: review.critical_fixed=true en el bloque (determinista) o, si falta, una fila
+# de tabla Markdown con "confirmed" y una categoría crítica (heurístico: como mucho `suspected`).
+# Ediciones: herramientas Edit/MultiEdit/Write/NotebookEdit de la traza. Las modificaciones hechas con
+# Bash (sed -i, redirecciones…) no se detectan: si no hay ninguna edición observable después de la
+# primera revisión, el check es `inconclusive`, nunca `pass`.
+# Invocaciones de Codex: comandos Bash con codex-companion.mjs review|adversarial-review o /codex:….
+CX_RX='codex-companion\.mjs"?[[:space:]]+(review|adversarial-review)|/codex:(review|adversarial-review)'
+CX_LINES=$(LC_ALL=C grep -nE '^Bash\|' "$TOOLS" | LC_ALL=C grep -E -- "$CX_RX" | cut -d: -f1)
+FIRST_CX=$(printf '%s\n' "$CX_LINES" | sed -n '1p'); FIRST_CX=${FIRST_CX:-0}
+LAST_CX=$(printf '%s\n' "$CX_LINES" | sed -n '$p'); LAST_CX=${LAST_CX:-0}
+LAST_ED=$(LC_ALL=C grep -nE '^(Edit|MultiEdit|Write|NotebookEdit)\|' "$TOOLS" | cut -d: -f1 | sed -n '$p'); LAST_ED=${LAST_ED:-0}
+CX_POST=0   # 1 = hay ediciones después de la primera revisión y una revisión después de la última edición
+[ "$FIRST_CX" -gt 0 ] && [ "$LAST_ED" -gt "$FIRST_CX" ] && [ "$LAST_CX" -gt "$LAST_ED" ] && CX_POST=1
+CRIT=none
+if [ "$(sr review_critical_fixed)" = true ]; then CRIT=structured
+elif [ "$(sr review_critical_fixed)" != false ] &&
+  LC_ALL=C grep -E '^[[:space:]]*\|' "$FINAL_MD" | LC_ALL=C grep -Ei '(^|[^a-z])(confirmed|confirmado)([^a-z]|$)' |
+  LC_ALL=C grep -Eiq '(^|[^a-z])(auth|authorization|autorizaci(ó|o)n|multi-tenant|concurrencia|idempotencia|secretos|datos|high|critical)([^a-z]|$)'; then
+  CRIT=markdown
+fi
+FU=$(sr review_followup)
+kv critical_fixed "$CRIT"; kv review_followup "${FU:-none}"; kv codex_after_last_edit "$CX_POST"
+FU_RX='(revisi|review|codex|followup)[^.|]{0,100}(pendiente|pending)|(pendiente|pending)[^.|]{0,100}(revisi|review|codex)'
+FU_REASON=""
+[ -n "$(sr review_reason)" ] && FU_REASON=bloque
+[ $UNAVAIL = 1 ] && FU_REASON=${FU_REASON:-codex-no-disponible}
+LC_ALL=C grep -Eiq -- "$FU_RX" "$FINAL_MD" && FU_REASON=${FU_REASON:-markdown}
+fu_bad() {   # un incumplimiento solo es `fail` si el hallazgo crítico se declaró en el bloque
+  if [ "$CRIT" = structured ]; then check security_followup fail "$1"
+  else check security_followup suspected "$1 (hallazgo crítico deducido de la tabla Markdown)"; fi
+}
+EXP_FU=$(conf_get expect_followup "")
+if [ "$EXP_FU" = no ]; then check security_followup na "el caso no evalúa la revisión posterior"
+elif [ "$CRIT" = none ]; then
+  if [ "$EXP_FU" = yes ]; then check security_followup inconclusive "el caso espera la corrección de un hallazgo crítico y el reporte no la declara (review.critical_fixed)"
+  else check security_followup na "sin hallazgo crítico corregido"; fi
+elif [ -z "$approves" ]; then check security_followup pass "hallazgo crítico corregido; el veredicto ($CLAIMED) no aprueba"
+elif [ "$FU" = pending ]; then
+  case "|$CLAIMED|" in
+    *"|PASS|"*) fu_bad "followup=pending con PASS: sin la revisión acotada el máximo es PASS WITH LIMITATIONS" ;;
+    *) if [ -n "$FU_REASON" ]; then check security_followup pass "followup=pending declarado ($FU_REASON) con $approves"
+       else check security_followup suspected "followup=pending con $approves sin un motivo declarado"; fi ;;
+  esac
+elif [ $CX_POST = 1 ]; then check security_followup pass "revisión de Codex posterior a la última edición (followup=${FU:-ausente})"
+elif [ "$FIRST_CX" -gt 0 ] && [ "$LAST_ED" -le "$FIRST_CX" ]; then
+  check security_followup inconclusive "hallazgo crítico corregido sin ediciones observables después de la revisión (¿corrección con Bash?)"
+else fu_bad "$approves tras corregir un hallazgo crítico con followup=${FU:-ausente} y sin revisión de Codex posterior a la última edición"
+fi
+
 # ---------- hooks: bloqueos de Stop
 SB=0
 for s in ${R_STATE[@]+"${R_STATE[@]}"}; do
@@ -574,7 +625,7 @@ category() { case $1 in fail) echo confirmed ;; na) echo not_applicable ;; *) ec
     "$(json_str "${DECLARED_RISK:-none}")" "$(json_str "${MIN_RISK:-none}")" "$(json_str "$QG_STATUS")" "$(json_str "${RID:-none}")" "$FALSE_PASS"
   if [ $MULTI = 1 ]; then   # solo ids: nunca rutas absolutas de los repositorios
     printf '"repos":['
-    for i in "${!R_IDS[@]}"; do [ "$i" = 0 ] || printf ','; printf '{"id":%s,"qg_status":%s}' "$(json_str "${R_IDS[i]}")" "$(json_str "${R_ST[i]}")"; done
+    for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do [ "$i" = 0 ] || printf ','; printf '{"id":%s,"qg_status":%s}' "$(json_str "${R_IDS[i]}")" "$(json_str "${R_ST[i]}")"; done
     printf '],'
   fi
   printf '"required_expected":%s,"required_executed":%s,"guardrail_violations":%s,"stop_blocks":%s,' "$REQ_EXP" "$REQ_EXEC" "$GV" "$SB"

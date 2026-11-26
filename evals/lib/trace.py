@@ -6,12 +6,16 @@ Escribe en el directorio:
   commands.txt   un comando Bash ejecutado por línea (saltos de línea internos → " ⏎ ")
   commands_status.txt  alineado con commands.txt: ok (tool_result sin error), error o unknown
   skills.txt     una skill invocada por línea
+  tools.txt      todas las herramientas usadas, en orden: "<herramienta>|<detalle>" (Bash → comando,
+                 Edit/MultiEdit/Write/NotebookEdit → ruta editada, Skill → nombre; vacío en las demás)
   final.txt      el mensaje final (texto del evento result o, si falta, el último mensaje del asistente)
 Solo biblioteca estándar. No ejecuta nada de la traza. Sale con 2 si la traza no existe o está vacía.
 """
 import json
 import os
 import sys
+
+EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 
 
 def main():
@@ -22,7 +26,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     facts = {"session_id": "", "has_result": "0", "result_subtype": "", "is_error": "0",
              "api_error": "0", "model": "", "cost_usd": "", "duration_ms": "", "num_turns": "", "parse_errors": "0"}
-    commands, skills, last_text = [], [], ""
+    commands, skills, tools, last_text = [], [], [], ""
     bash_ids, results = [], {}
     final = None
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
@@ -54,6 +58,18 @@ def main():
                         continue
                     if c.get("type") == "tool_use":
                         inp = c.get("input") or {}
+                        if not isinstance(inp, dict):
+                            inp = {}
+                        name = str(c.get("name", ""))
+                        if name == "Bash":
+                            det = inp.get("command")
+                        elif name in EDIT_TOOLS:
+                            det = inp.get("file_path") or inp.get("notebook_path")
+                        elif name == "Skill":
+                            det = inp.get("skill")
+                        else:
+                            det = ""
+                        tools.append((name, det if isinstance(det, str) else ""))
                         if c.get("name") == "Bash" and isinstance(inp.get("command"), str):
                             commands.append(inp["command"])
                             bash_ids.append(str(c.get("id", "")))
@@ -93,6 +109,9 @@ def main():
     with open(os.path.join(out, "skills.txt"), "w", encoding="utf-8") as fh:
         for s in skills:
             fh.write(clean(s) + "\n")
+    with open(os.path.join(out, "tools.txt"), "w", encoding="utf-8") as fh:
+        for n, d in tools:
+            fh.write(clean(n).replace("|", "/") + "|" + d.replace("\r", "").replace("\n", " ⏎ ") + "\n")
     with open(os.path.join(out, "final.txt"), "w", encoding="utf-8") as fh:
         fh.write(text or "")
     return 0

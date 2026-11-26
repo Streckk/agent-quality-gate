@@ -21,11 +21,17 @@ chmod +x "$FAKE/npm"; export PATH="$FAKE:$PATH"
 
 jstr() { local v=$1; v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//$'\n'/\\n}; printf '"%s"' "$v"; }
 # mk_trace <archivo> <session_id> <mensaje-final> [comandos…]
+# Un elemento "@Edit:<ruta>" (o @Write:, @NotebookEdit:) genera esa herramienta de edición en lugar de Bash.
 mk_trace() {
   local f=$1 sid=$2 final=$3; shift 3
   { printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
-    local c; for c in "$@"; do
-      printf '{"type":"assistant","session_id":"%s","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":%s}}]}}\n' "$sid" "$(jstr "$c")"
+    local c t; for c in "$@"; do
+      case $c in
+        @Edit:*|@Write:*|@NotebookEdit:*)
+          t=${c%%:*}; t=${t#@}
+          printf '{"type":"assistant","session_id":"%s","message":{"content":[{"type":"tool_use","name":"%s","input":{"file_path":%s}}]}}\n' "$sid" "$t" "$(jstr "${c#*:}")" ;;
+        *) printf '{"type":"assistant","session_id":"%s","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":%s}}]}}\n' "$sid" "$(jstr "$c")" ;;
+      esac
     done
     printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":%s,"total_cost_usd":0.12,"duration_ms":4200,"num_turns":5}\n' "$sid" "$(jstr "$final")"
   } > "$f"

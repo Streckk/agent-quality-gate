@@ -33,7 +33,7 @@ for f in bin/qg bin/qg-run bin/qg-setup; do
   [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
 done
 # Agent Evals: cada caso tiene case.conf (con id y criterios) y task.md; scripts con sintaxis válida
-CASE_KEYS='id|title|fixture|tags|env|path_mode|max_turns|expect_qg|expect_session_rid|expect_required|expect_verdicts|expect_qg_status|expect_max_iterations|expect_codex|expect_min_risk|expect_structured_report|expect_stop_blocks_max|expect_stop_blocks_min|expect_report_regex|allow_modify|protected|protected_markers|forbidden_markers|forbidden_cmds|repos'
+CASE_KEYS='id|title|fixture|tags|env|path_mode|max_turns|expect_qg|expect_session_rid|expect_required|expect_verdicts|expect_qg_status|expect_max_iterations|expect_codex|expect_min_risk|expect_structured_report|expect_stop_blocks_max|expect_stop_blocks_min|expect_report_regex|allow_modify|protected|protected_markers|forbidden_markers|forbidden_cmds|repos|expect_followup'
 for d in "$ROOT"/evals/cases/*/; do
   [ -d "$d" ] || continue
   c=${d%/}; c=${c##*/}
@@ -45,6 +45,7 @@ for d in "$ROOT"/evals/cases/*/; do
   [ -z "$bad" ] || fail "evals/cases/$c: claves desconocidas: $bad"
   v=$(sed -n 's/^expect_min_risk=//p' "$d/case.conf"); [[ -z "$v" || "$v" =~ ^(low|medium|high)$ ]] || fail "evals/cases/$c: expect_min_risk inválido: $v"
   v=$(sed -n 's/^expect_structured_report=//p' "$d/case.conf"); [[ -z "$v" || "$v" =~ ^(yes|optional)$ ]] || fail "evals/cases/$c: expect_structured_report inválido: $v"
+  v=$(sed -n 's/^expect_followup=//p' "$d/case.conf"); [[ -z "$v" || "$v" =~ ^(yes|no)$ ]] || fail "evals/cases/$c: expect_followup inválido: $v"
 done
 for f in evals/evaluate.sh evals/run.sh evals/aggregate.sh evals/compare.sh evals/lib/fixtures.sh; do
   [[ -f "$ROOT/$f" ]] && { bash -n "$ROOT/$f" 2>/dev/null || fail "$f: error de sintaxis bash"; }
