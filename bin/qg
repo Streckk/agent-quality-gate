@@ -1543,12 +1543,19 @@ cl_src() {
   case "$CL_SOURCE" in *"$1"$'\n'*) ;; *) CL_SOURCE="$CL_SOURCE$1"$'\n' ;; esac
 }
 
-# Primer archivo existente entre $PWD y la raíz del repo (si la hay).
+# Archivo más cercano subiendo desde $PWD hasta la raíz del repo (sin repo: solo $PWD). Es el que
+# usaría la herramienta: nunca se salta un directorio intermedio para ir a la raíz.
 cl_find() {
-  local top
+  local top d
   [ -f "$PWD/$1" ] && { printf '%s' "$PWD/$1"; return 0; }
   top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
-  [ -f "$top/$1" ] && { printf '%s' "$top/$1"; return 0; }
+  top=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+  d=$(pwd -P)
+  while [ -n "$d" ]; do
+    [ -f "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }
+    [ "$d" = "$top" ] && break
+    case $d in "$top"/*) d=${d%/*} ;; *) break ;; esac
+  done
   return 1
 }
 
@@ -1717,6 +1724,7 @@ cl_text() {   # cl_text <depth> <texto>
         }
         if (c == "\"" || c == "\047") { q = c; out = out c; continue }
         if (d == "&&" || d == "||") { out = out "\n"; i++; continue }
+        if (c == "|" && substr(t, i - 1, 1) == ">") { out = out c; continue }   # >| es redirección
         if (c == ";" || c == "|") { out = out "\n"; continue }
         if (c == "&" && substr(t, i - 1, 1) != ">" && substr(t, i + 1, 1) != ">") { out = out "\n"; continue }
         if (c == "$") out = out "\002"
@@ -1753,7 +1761,24 @@ cl_run_script() {   # cl_run_script <depth> <script>
 }
 
 cl_pm() {   # cl_pm <depth> <gestor> <args…>
-  local lvl=$1 pm=$2 sub s; shift 2
+  local lvl=$1 pm=$2 sub s a first=""; shift 2
+  # Cambios de directorio o de paquete: el script no sería el del package.json que se lee aquí.
+  for a in "$@"; do
+    [ "$a" = -- ] && break
+    case $a in
+      -C|-C?*|--prefix|--prefix=*|--dir|--dir=*|--cwd|--cwd=*)
+        cl_add 5 cwd_change "'$pm $a': el script se resuelve en otro directorio"; return ;;
+      -w|-w?*|--workspace|--workspace=*|--workspaces|--workspaces=*|--filter|--filter=*|-F|-F?*|-r|--recursive)
+        cl_add 5 workspace "'$pm $a': el script se resuelve en otro paquete del monorepo"; return ;;
+      -*) ;;
+      *) [ -n "$first" ] && continue
+         first=$a
+         case $a in
+           workspace|workspaces) cl_add 5 workspace "'$pm $a': el script se resuelve en otro paquete del monorepo"; return ;;
+           exec|x|dlx) break ;;   # lo que sigue son argumentos del comando ejecutado
+         esac ;;
+    esac
+  done
   while [ $# -ge 1 ]; do case $1 in -*) shift ;; *) break ;; esac; done   # opciones globales
   [ $# -ge 1 ] || { cl_add 5 ambiguous "$pm sin subcomando"; return; }
   sub=$1; shift
@@ -1868,15 +1893,16 @@ cl_seg() {   # cl_seg <depth> <palabras…>
   for w in "$@"; do
     w=${w#[\"\']}; w=${w%[\"\']}
     case $w in
-      --fix|--fix=*|--write|--write=*|-u|--update|--update=*|--update-*|--updateSnapshot|--snapshot-update|--apply|--apply-*)
+      --fix|--fix=*|--write|--write=*|-u|--update|--update=*|--update-*|--updateSnapshot|--updateSnapshot=*|--snapshot-update|--force-regen|--apply|--apply-*)
         cl_add 3 fix_flag "$w en los argumentos" ;;
+      -[A-Za-z]*u*) [[ $w =~ ^-[A-Za-z]*u[A-Za-z]*$ ]] && cl_add 3 fix_flag "$w (incluye -u) en los argumentos" ;;
       -w) case $tool in npm|pnpm|yarn|bun) ;; *) cl_add 3 fix_flag "-w en los argumentos" ;; esac ;;
     esac
-    if [[ $w =~ ^[0-9\&]*\>\>?(.*)$ ]]; then
+    if [[ $w =~ ^[0-9\&]*\>[\>\|]?(.*)$ ]]; then
       rd=${BASH_REMATCH[1]}
       case $rd in /dev/null|\&*) rd="" ;; esac
       [ -z "$rd" ] || cl_add 2 redirect "redirección a $rd"
-    elif [[ $prev =~ ^[0-9\&]*\>[\>\&]?$ ]]; then
+    elif [[ $prev =~ ^[0-9\&]*\>[\>\&\|]?$ ]]; then
       case $w in /dev/null|\&*|[0-9]|-) ;; *) cl_add 2 redirect "redirección a $w" ;; esac
     fi
     prev=$w
@@ -1936,7 +1962,9 @@ cl_seg() {   # cl_seg <depth> <palabras…>
       esac
       for w in "$@"; do cl_word "$w" "los argumentos"; done
       return ;;
-    echo|printf|cd|set|export|exit|true|false|:|test|'['|'[['|fi|done|pushd|popd|read|cat|ls|grep|head|tail|wc|diff)
+    cd|pushd|popd)
+      cl_add 5 cwd_change "'$tool' cambia de directorio: lo que sigue no se resuelve con este package.json"; return ;;
+    echo|printf|set|export|exit|true|false|:|test|'['|'[['|fi|done|read|cat|ls|grep|head|tail|wc|diff)
       cl_add 1 read_only_tool "$tool"; return ;;
     eslint|jest|vitest|mocha|ava|pytest|mypy|flake8|pylint|ruff|shellcheck|stylelint|rspec|phpunit|pyright|golangci-lint|tap|playwright|cypress|biome|oxlint)
       cl_add 1 read_only_tool "$tool"
