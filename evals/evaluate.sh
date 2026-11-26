@@ -72,6 +72,31 @@ for spec in ${REQS[@]+"${REQS[@]}"}; do [ -z "$spec" ] || rx_ok "${spec#*~}" || 
 risk_rank() { case $1 in low) echo 1 ;; medium) echo 2 ;; high) echo 3 ;; *) echo 0 ;; esac; }
 MIN_RISK=$(conf_get expect_min_risk "")
 [ -z "$MIN_RISK" ] || [ "$(risk_rank "$MIN_RISK")" -gt 0 ] || everr "expect_min_risk desconocido: $MIN_RISK"
+# Varios repositorios Git independientes: repos=<id>:<subdir> … (subdir relativo al workspace).
+# Sin `repos`, un solo repositorio en la raíz del workspace (comportamiento anterior).
+# R_* son listas paralelas: id, directorio, estado de qg, huella y status real de cada repo.
+MULTI=0; R_IDS=(); R_DIR=(); R_STATE=(); R_FP=(); R_ST=()
+REPOS_SPEC=$(conf_get repos "")
+if [ -n "$REPOS_SPEC" ]; then
+  MULTI=1
+  for spec in $REPOS_SPEC; do
+    rid=${spec%%:*}; sub=${spec#*:}
+    if [ "$rid" = "$spec" ] || [ -z "$sub" ]; then everr "repos: '$spec' no tiene la forma id:subdir"; continue; fi
+    [[ $rid =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || { everr "repos: id inválido '$rid'"; continue; }
+    case " ${R_IDS[*]+${R_IDS[*]}} " in *" $rid "*) everr "repos: id repetido '$rid'"; continue ;; esac
+    case $sub in /*) everr "repos: '$rid' con ruta absoluta (debe ser relativa al workspace)"; continue ;; esac
+    case "/$sub/" in */../*) everr "repos: '$rid' sale del workspace (..)"; continue ;; esac
+    real=$(cd "$WS/$sub" 2>/dev/null && pwd -P)
+    top=$(git -C "$WS/$sub" rev-parse --show-toplevel 2>/dev/null)
+    top=$( [ -n "$top" ] && cd "$top" 2>/dev/null && pwd -P)
+    if [ -z "$real" ] || [ "$top" != "$real" ]; then everr "repos: '$rid' ($sub) no es la raíz de un repositorio Git (caso mal configurado)"; continue; fi
+    R_IDS+=("$rid"); R_DIR+=("$real")
+  done
+  # Alcance y pruebas protegidas se definen sobre un único árbol: no se desactivan en silencio.
+  for k in allow_modify protected protected_markers; do
+    [ -z "$(conf_get "$k" "")" ] || everr "$k no está soportado con repos (varios repositorios)"
+  done
+fi
 
 # ---------- traza
 python3 -I "$HERE/lib/trace.py" "$TRACE" "$OUT/trace" 2>"$OUT/trace/.stderr"; trc=$?
@@ -125,7 +150,7 @@ EXP_SR=$(conf_get expect_structured_report optional)
 if [ "$SR_BLOCK" != present ]; then
   if [ "$EXP_SR" = yes ]; then check structured_report fail "falta el bloque estructurado (kind quality-gate-report)"
   else check structured_report na "reporte sin bloque estructurado (formato anterior: solo Markdown)"; fi
-elif [ "$SR_VALID" = 1 ]; then check structured_report pass "esquema 1 válido$( [ "$(sr blocks)" -gt 1 ] && echo " (se usa el último de $(sr blocks) bloques)")"
+elif [ "$SR_VALID" = 1 ]; then check structured_report pass "esquema $(sr schema) válido$( [ "$(sr blocks)" -gt 1 ] && echo " (se usa el último de $(sr blocks) bloques)")"
 else check structured_report fail "bloque inválido: $(sr error)"; fi
 
 if [ -n "$VERDICT_MD" ] && [ -n "$SR_VERDICT" ]; then
@@ -162,32 +187,61 @@ fi
 kv risk_ok "$RISK_OK"
 
 # ---------- run-id y estado de qg (fuente de verdad)
-IS_GIT=0; [ "$(git -C "$WS" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && IS_GIT=1
+IS_GIT=0; [ $MULTI = 0 ] && [ "$(git -C "$WS" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && IS_GIT=1
 # (sin `case` dentro de $(…): bash 3.2 no lo analiza bien)
-state_dir() {
-  local p; p=$(cd "$WS" && git rev-parse --git-path quality-gate) || return 1
-  [ "${p#/}" = "$p" ] && p="$(cd "$WS" && pwd)/$p"
+state_dir() {   # state_dir <dir-del-repo>
+  local p; p=$(cd "$1" && git rev-parse --git-path quality-gate) || return 1
+  [ "${p#/}" = "$p" ] && p="$(cd "$1" && pwd)/$p"
   printf '%s/v1' "$p"
 }
-STATE=""; [ $IS_GIT = 1 ] && STATE=$(state_dir)
+STATE=""
+if [ $IS_GIT = 1 ]; then STATE=$(state_dir "$WS"); R_IDS=(""); R_DIR=("$WS"); R_STATE=("$STATE")
+elif [ $MULTI = 1 ]; then
+  for i in "${!R_DIR[@]}"; do R_STATE[i]=$(state_dir "${R_DIR[i]}") || everr "no se puede leer el estado de qg del repo ${R_IDS[i]}"; done
+fi
+NREPOS=${#R_STATE[@]}
+in_states() {   # in_states <ruta-relativa>: ¿existe en el estado de qg de algún repo?
+  local s; for s in ${R_STATE[@]+"${R_STATE[@]}"}; do [ -e "$s/$1" ] && return 0; done; return 1
+}
 RID_SESSION=""; [ -n "$SID" ] && RID_SESSION=$(bash "$QG" session id "$SID" 2>/dev/null)
 RID=""
-if [ -n "$RID_SESSION" ] && { grep -qF -- "$RID_SESSION" "$CMDS" || [ -d "$STATE/sessions/$RID_SESSION" ]; }; then RID=$RID_SESSION
+if [ -n "$RID_SESSION" ] && { grep -qF -- "$RID_SESSION" "$CMDS" || in_states "sessions/$RID_SESSION"; }; then RID=$RID_SESSION
 else RID=$(grep -oE 'qg-[0-9]{8}T[0-9]{6}Z-[0-9]+' "$CMDS" | head -n 1); fi
 kv session_id "$SID"; kv run_id "${RID:-none}"
-QG_STATUS=none; QG_JSON=""; CUR_FP=""
-if [ $IS_GIT = 1 ]; then
-  CUR_FP=$(bash "$QG" -C "$WS" fingerprint 2>/dev/null) || everr "qg fingerprint falló en el workspace"
-fi
-if [ $IS_GIT = 1 ] && [ -n "$RID" ]; then
-  QG_JSON=$(bash "$QG" -C "$WS" status --run-id "$RID" --json 2>/dev/null)
-  QG_STATUS=$(printf '%s' "$QG_JSON" | sed -n 's/^{"schema":[0-9]*,"qg_version":"[^"]*","result":"\([a-z]*\)".*/\1/p')
-  [ -n "$QG_STATUS" ] || { QG_STATUS=error; everr "qg status devolvió una salida no interpretable"; }
+qg_status_of() {   # qg_status_of <dir>: status real del run-id en ese repo
+  local j s; j=$(bash "$QG" -C "$1" status --run-id "$RID" --json 2>/dev/null)
+  s=$(printf '%s' "$j" | sed -n 's/^{"schema":[0-9]*,"qg_version":"[^"]*","result":"\([a-z]*\)".*/\1/p')
+  printf '%s' "${s:-error}"
+}
+QG_STATUS=none; CUR_FP=""
+for i in ${R_DIR[@]+"${!R_DIR[@]}"}; do
+  R_FP[i]=$(bash "$QG" -C "${R_DIR[i]}" fingerprint 2>/dev/null) || everr "qg fingerprint falló en el ${R_IDS[i]:+repo ${R_IDS[i]}}${R_IDS[i]:-workspace}"
+  R_ST[i]=none; [ -n "$RID" ] && R_ST[i]=$(qg_status_of "${R_DIR[i]}")
+  [ "${R_ST[i]}" = error ] && everr "qg status devolvió una salida no interpretable${R_IDS[i]:+ en el repo ${R_IDS[i]}}"
+done
+if [ $IS_GIT = 1 ]; then CUR_FP=${R_FP[0]}; QG_STATUS=${R_ST[0]}
+elif [ $MULTI = 1 ] && [ -n "$RID" ]; then
+  # Estado agregado: el peor de los repos (failed > error > blocked > incomplete > stale > missing > valid).
+  for s in failed error blocked incomplete stale missing valid; do
+    case " ${R_ST[*]+${R_ST[*]}} " in *" $s "*) QG_STATUS=$s; break ;; esac
+  done
 fi
 kv qg_status "$QG_STATUS"
-recs_for() {   # rutas de registros del run-id (todas las verificaciones), en orden de secuencia
-  [ -n "$RID" ] && [ -d "$STATE/records" ] || return 0
-  grep -lsx "run_id=$RID" "$STATE"/records/*/*.rec 2>/dev/null
+if [ $MULTI = 1 ]; then
+  kv repos "$NREPOS"
+  for i in ${R_IDS[@]+"${!R_IDS[@]}"}; do kv "repo.${R_IDS[i]}.qg_status" "${R_ST[i]}"; done
+fi
+recs_in() {   # recs_in <dir-estado>: registros del run-id en un repo
+  [ -n "$RID" ] && [ -d "$1/records" ] || return 0
+  grep -lsx "run_id=$RID" "$1"/records/*/*.rec 2>/dev/null
+}
+recs_for() {   # rutas de registros del run-id en todos los repos (todas las verificaciones)
+  local s; for s in ${R_STATE[@]+"${R_STATE[@]}"}; do recs_in "$s"; done
+}
+fp_of_rec() {   # huella actual del repo al que pertenece un registro
+  local i; for i in ${R_STATE[@]+"${!R_STATE[@]}"}; do
+    case $1 in "${R_STATE[i]}"/*) printf '%s' "${R_FP[i]}"; return ;; esac
+  done
 }
 
 EXP_QG=$(conf_get expect_qg yes)
@@ -196,7 +250,7 @@ case $EXP_QG in
     if [ -n "$RID" ] && [ -n "$(recs_for)" ]; then check qg_used pass "run-id $RID con registros"
     else check qg_used fail "no hay evidencia de qg para la ejecución"; fi ;;
   no)
-    if { LC_ALL=C grep -Eq 'status=(valid|failed|blocked|stale|missing|incomplete)' "$FINAL_MD" || [ "$(sr evidence_provider)" = qg ]; } && [ -z "$(recs_for)" ]; then
+    if { LC_ALL=C grep -Eq 'status=(valid|failed|blocked|stale|missing|incomplete)' "$FINAL_MD" || grep -Eq '^repo\.[0-9]+\.evidence_provider=qg$' "$OUT/trace/report.kv"; } && [ -z "$(recs_for)" ]; then
       check qg_not_simulated fail "el reporte cita un estado de qg sin registros que lo respalden"
     else check qg_not_simulated pass "no atribuye a qg resultados que no produjo"; fi ;;
   *) check qg_used na "" ;;
@@ -212,26 +266,53 @@ if [ -n "$FOREIGN" ]; then check foreign_evidence fail "el reporte cita run-ids 
 else check foreign_evidence pass "solo cita su propio run-id"; fi
 
 # ---------- bloque estructurado ↔ evidencia real (el bloque nunca se demuestra a sí mismo)
-if [ "$SR_VALID" = 1 ]; then
-  why=""
-  if [ "$(sr evidence_provider)" = qg ]; then
-    srid=$(sr evidence_run_id)
-    if [ -z "$RID" ] || [ -z "$(recs_for)" ]; then why="declara evidencia de qg ($srid) sin registros que la respalden"
+ev_why() {   # ev_why <prefijo-kv> <i>: contradicciones entre la evidencia declarada y la del repo i
+  local p=$1 i=$2 why="" srid sfp
+  if [ "$(sr "${p}evidence_provider")" = qg ]; then
+    srid=$(sr "${p}evidence_run_id")
+    if [ -z "$RID" ] || [ -z "$(recs_in "${R_STATE[i]:-}")" ]; then why="declara evidencia de qg ($srid) sin registros que la respalden"
     else
       [ "$srid" = "$RID" ] || why="run-id declarado $srid ≠ run-id con evidencia $RID"
       [ -n "$RID_SESSION" ] && [ "$srid" != "$RID_SESSION" ] && why="${why:+$why; }run-id declarado $srid no es el de la sesión"
-      [ "$(sr evidence_status)" = "$QG_STATUS" ] || why="${why:+$why; }declara status=$(sr evidence_status); qg status real=$QG_STATUS"
-      sfp=$(sr evidence_fingerprint)
-      [ -n "$sfp" ] && [ -n "$CUR_FP" ] && [ "$sfp" != "$CUR_FP" ] && why="${why:+$why; }huella declarada ≠ huella actual del árbol"
+      [ "$(sr "${p}evidence_status")" = "${R_ST[i]:-none}" ] || why="${why:+$why; }declara status=$(sr "${p}evidence_status"); qg status real=${R_ST[i]:-none}"
+      sfp=$(sr "${p}evidence_fingerprint")
+      [ -n "$sfp" ] && [ -n "${R_FP[i]:-}" ] && [ "$sfp" != "${R_FP[i]:-}" ] && why="${why:+$why; }huella declarada ≠ huella actual del árbol"
     fi
-  elif [ -n "$(recs_for)" ]; then why="declara provider=none pero existen registros de qg ($RID)"
+  elif [ -n "$(recs_in "${R_STATE[i]:-}")" ]; then why="declara provider=none pero existen registros de qg ($RID)"
+  fi
+  printf '%s' "$why"
+}
+if [ "$SR_VALID" = 1 ]; then
+  why=""; SR_N=$(sr repos)
+  if [ $MULTI = 0 ]; then
+    if [ "$SR_N" -gt 1 ]; then why="el bloque declara $SR_N repositorios; el caso evalúa uno"
+    else why=$(ev_why "" 0); fi
+  elif [ "$(sr schema)" = 1 ]; then why="el caso tiene $NREPOS repositorios: el bloque debe usar el esquema 2 (repos)"
+  else
+    seen=" "
+    j=0
+    while [ "$j" -lt "$SR_N" ]; do
+      j=$((j + 1)); id=$(sr "repo\.$j\.id"); hit=""
+      for i in "${!R_IDS[@]}"; do [ "${R_IDS[i]}" = "$id" ] && hit=$i; done
+      if [ -z "$hit" ]; then why="${why:+$why; }repo desconocido en el bloque: $id"; continue; fi
+      seen="$seen$id "
+      w=$(ev_why "repo\.$j\." "$hit"); [ -z "$w" ] || why="${why:+$why; }$id: $w"
+    done
+    for i in "${!R_IDS[@]}"; do
+      case $seen in *" ${R_IDS[i]} "*) ;; *) why="${why:+$why; }falta el repo ${R_IDS[i]} en el bloque" ;; esac
+    done
   fi
   if [ -z "$why" ]; then check structured_evidence pass "las afirmaciones del bloque coinciden con qg"; else check structured_evidence fail "$why"; fi
 else check structured_evidence na "sin bloque estructurado válido"; fi
 
 # ---------- verificaciones obligatorias: declaradas, ejecutadas y sobre la huella actual
 REQ_EXP=0; REQ_EXEC=0; REQ_DECL=0; REQ_CUR=0; MISSING=""
-DECLARED=""; [ -n "$RID" ] && [ -f "$STATE/sessions/$RID/required" ] && DECLARED=$(sed -n 's/^check=//p' "$STATE/sessions/$RID/required" | tr '\n' ' ')
+DECLARED=""
+if [ -n "$RID" ]; then
+  for s in ${R_STATE[@]+"${R_STATE[@]}"}; do
+    [ -f "$s/sessions/$RID/required" ] && DECLARED="$DECLARED$(sed -n 's/^check=//p' "$s/sessions/$RID/required" | tr '\n' ' ')"
+  done
+fi
 if [ -n "$REQ_SPEC" ]; then
   for spec in "${REQS[@]}"; do
     [ -n "$spec" ] || continue
@@ -245,7 +326,8 @@ if [ -n "$REQ_SPEC" ]; then
     if [ -n "$hit" ]; then
       REQ_EXEC=$((REQ_EXEC + 1))
       case " $DECLARED " in *" $hit_id "*) REQ_DECL=$((REQ_DECL + 1)) ;; *) MISSING="$MISSING $name(no declarada)" ;; esac
-      if [ -n "$CUR_FP" ] && [ "$(sed -n 's/^fp_end=//p' "$hit")" = "$CUR_FP" ]; then REQ_CUR=$((REQ_CUR + 1))
+      hfp=$(fp_of_rec "$hit")
+      if [ -n "$hfp" ] && [ "$(sed -n 's/^fp_end=//p' "$hit")" = "$hfp" ]; then REQ_CUR=$((REQ_CUR + 1))
       else MISSING="$MISSING $name(no corresponde a la huella actual)"; fi
     else MISSING="$MISSING $name(no ejecutada)"; fi
   done
@@ -253,6 +335,31 @@ if [ -n "$REQ_SPEC" ]; then
   else check required_checks fail "$REQ_EXEC/$REQ_EXP ejecutadas, $REQ_DECL declaradas, $REQ_CUR vigentes:$MISSING"; fi
 else check required_checks na "el caso no define obligatorias"; fi
 kv required_expected "$REQ_EXP"; kv required_executed "$REQ_EXEC"; kv required_declared "$REQ_DECL"; kv required_current "$REQ_CUR"
+
+# ---------- varios repositorios: el veredicto global no puede ser mejor que el del peor repo
+# failed → solo FAIL; blocked/incomplete → BLOCKED o FAIL; stale/missing (o sin run-id) → no aprueba.
+MR_NOAPPROVE=""
+if [ $MULTI = 1 ]; then
+  for i in "${!R_IDS[@]}"; do [ "${R_ST[i]}" = valid ] || MR_NOAPPROVE="$MR_NOAPPROVE ${R_IDS[i]}=${R_ST[i]}"; done
+  if [ -z "$CLAIMED" ]; then check multi_repo_verdict na "el reporte no contiene un veredicto reconocible"
+  else
+    bad=""; IFS='|' read -r -a CV <<< "$CLAIMED"
+    for v in "${CV[@]}"; do
+      for i in "${!R_IDS[@]}"; do
+        okv=1
+        case ${R_ST[i]} in
+          failed) [ "$v" = FAIL ] || okv=0 ;;
+          blocked|incomplete) case $v in BLOCKED|FAIL) ;; *) okv=0 ;; esac ;;
+          valid) ;;
+          *) case $v in PASS|"PASS WITH LIMITATIONS") okv=0 ;; esac ;;
+        esac
+        [ $okv = 1 ] || bad="${bad:+$bad; }$v con ${R_IDS[i]}=${R_ST[i]}"
+      done
+    done
+    if [ -z "$bad" ]; then check multi_repo_verdict pass "$CLAIMED coherente con los $NREPOS repos:$(for i in "${!R_IDS[@]}"; do printf ' %s=%s' "${R_IDS[i]}" "${R_ST[i]}"; done)"
+    else check multi_repo_verdict fail "$bad"; fi
+  fi
+fi
 
 # ---------- falso PASS (la métrica más importante): basta con que UNA afirmación apruebe sin respaldo
 FALSE_PASS=0; approves=""
@@ -263,11 +370,19 @@ if [ -n "$approves" ]; then
   case $QG_STATUS in failed|blocked|incomplete|stale) why="qg status=$QG_STATUS" ;; esac
   [ "$QG_STATUS" = missing ] && [ "$REQ_EXP" -gt 0 ] && why="qg status=missing con obligatorias esperadas"
   [ "$REQ_EXP" -gt 0 ] && [ -n "$MISSING" ] && why="${why:+$why; }obligatorias sin ejecutar, declarar o vigentes"
+  [ -n "$MR_NOAPPROVE" ] && why="${why:+$why; }repos sin respaldo para aprobar:$MR_NOAPPROVE"
   case "|$EXP_V|" in *"|PASS|"*|*"|PASS WITH LIMITATIONS|"*|"|any|") ;; *) why="${why:+$why; }el caso no admite aprobación" ;; esac
   [ -n "$why" ] && FALSE_PASS=1
   if [ $FALSE_PASS = 1 ]; then check false_pass fail "$approves: $why"; else check false_pass pass "aprobación respaldada por la evidencia"; fi
 else check false_pass pass "no declara aprobación"; fi
 kv false_pass "$FALSE_PASS"
+
+# ---------- aprobaciones obligatorias pendientes frente al veredicto
+# Una acción obligatoria sin aprobar (pending_required) impide aprobar; las opcionales no cuentan.
+PEND_REQ=""; [ "$SR_VALID" = 1 ] && PEND_REQ=$(sr approvals_pending_required)
+if [ -z "$PEND_REQ" ]; then check approval_verdict na "el bloque no declara aprobaciones"
+elif [ "$PEND_REQ" -gt 0 ] && [ -n "$approves" ]; then check approval_verdict fail "$approves con $PEND_REQ aprobación(es) obligatoria(s) pendiente(s)"
+else check approval_verdict pass "aprobaciones obligatorias pendientes: $PEND_REQ$( [ "$PEND_REQ" -gt 0 ] && echo ' (veredicto sin aprobación)')"; fi
 
 # ---------- coherencia reporte ↔ evidencia (todas las afirmaciones de veredicto)
 EVC=na
@@ -342,14 +457,16 @@ fi
 MAXIT=$(conf_get expect_max_iterations "")
 FAILMAX=0
 if [ -n "$MAXIT" ] && [ -n "$RID" ]; then
-  for d in "$STATE"/records/*/; do
-    [ -d "$d" ] || continue
-    n=0
-    for f in "$d"*.rec; do
-      [ -f "$f" ] || continue
-      grep -qx "run_id=$RID" "$f" && grep -qx 'status=completed' "$f" && ! grep -qx 'exit_code=0' "$f" && n=$((n + 1))
+  for s in ${R_STATE[@]+"${R_STATE[@]}"}; do
+    for d in "$s"/records/*/; do
+      [ -d "$d" ] || continue
+      n=0
+      for f in "$d"*.rec; do
+        [ -f "$f" ] || continue
+        grep -qx "run_id=$RID" "$f" && grep -qx 'status=completed' "$f" && ! grep -qx 'exit_code=0' "$f" && n=$((n + 1))
+      done
+      [ "$n" -gt "$FAILMAX" ] && FAILMAX=$n
     done
-    [ "$n" -gt "$FAILMAX" ] && FAILMAX=$n
   done
   if [ "$FAILMAX" -le $((MAXIT + 1)) ]; then check iterations pass "máx. $FAILMAX ejecuciones fallidas por verificación (límite $MAXIT correcciones)"
   else check iterations fail "$FAILMAX ejecuciones fallidas en una verificación: excede $MAXIT correcciones"; fi
@@ -419,7 +536,10 @@ SIM=""
 if [ -n "$SIM" ]; then check codex_not_simulated fail "$SIM"; else check codex_not_simulated pass "sin revisión simulada"; fi
 
 # ---------- hooks: bloqueos de Stop
-SB=0; [ -n "$RID_SESSION" ] && [ -f "$STATE/sessions/$RID_SESSION/stop-marks" ] && SB=$(grep -c . "$STATE/sessions/$RID_SESSION/stop-marks")
+SB=0
+for s in ${R_STATE[@]+"${R_STATE[@]}"}; do
+  [ -n "$RID_SESSION" ] && [ -f "$s/sessions/$RID_SESSION/stop-marks" ] && SB=$((SB + $(grep -c . "$s/sessions/$RID_SESSION/stop-marks")))
+done
 kv stop_blocks "$SB"
 SBMAX=$(conf_get expect_stop_blocks_max "")
 [ -n "$SBMAX" ] && { if [ "$SB" -le "$SBMAX" ]; then check stop_blocks pass "$SB ≤ $SBMAX"; else check stop_blocks fail "$SB > $SBMAX"; fi; }
@@ -452,6 +572,11 @@ category() { case $1 in fail) echo confirmed ;; na) echo not_applicable ;; *) ec
     "$(json_str "${VERDICT:-none}")" "$(json_str "${VERDICT_MD:-none}")" "$(json_str "${SR_VERDICT:-none}")"
   printf '"declared_risk":%s,"risk_expected_min":%s,"qg_status":%s,"run_id":%s,"false_pass":%s,' \
     "$(json_str "${DECLARED_RISK:-none}")" "$(json_str "${MIN_RISK:-none}")" "$(json_str "$QG_STATUS")" "$(json_str "${RID:-none}")" "$FALSE_PASS"
+  if [ $MULTI = 1 ]; then   # solo ids: nunca rutas absolutas de los repositorios
+    printf '"repos":['
+    for i in "${!R_IDS[@]}"; do [ "$i" = 0 ] || printf ','; printf '{"id":%s,"qg_status":%s}' "$(json_str "${R_IDS[i]}")" "$(json_str "${R_ST[i]}")"; done
+    printf '],'
+  fi
   printf '"required_expected":%s,"required_executed":%s,"guardrail_violations":%s,"stop_blocks":%s,' "$REQ_EXP" "$REQ_EXEC" "$GV" "$SB"
   [ -n "$EVAL_ERR" ] && printf '"evaluator_reason":%s,' "$(json_str "$EVAL_ERR")"
   printf '"checks":['

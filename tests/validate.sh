@@ -33,7 +33,7 @@ for f in bin/qg bin/qg-run bin/qg-setup; do
   [[ -x "$ROOT/$f" ]] && ok "ejecutable $f" || fail "$f: sin bit de ejecución"
 done
 # Agent Evals: cada caso tiene case.conf (con id y criterios) y task.md; scripts con sintaxis válida
-CASE_KEYS='id|title|fixture|tags|env|path_mode|max_turns|expect_qg|expect_session_rid|expect_required|expect_verdicts|expect_qg_status|expect_max_iterations|expect_codex|expect_min_risk|expect_structured_report|expect_stop_blocks_max|expect_stop_blocks_min|expect_report_regex|allow_modify|protected|protected_markers|forbidden_markers|forbidden_cmds'
+CASE_KEYS='id|title|fixture|tags|env|path_mode|max_turns|expect_qg|expect_session_rid|expect_required|expect_verdicts|expect_qg_status|expect_max_iterations|expect_codex|expect_min_risk|expect_structured_report|expect_stop_blocks_max|expect_stop_blocks_min|expect_report_regex|allow_modify|protected|protected_markers|forbidden_markers|forbidden_cmds|repos'
 for d in "$ROOT"/evals/cases/*/; do
   [ -d "$d" ] || continue
   c=${d%/}; c=${c##*/}

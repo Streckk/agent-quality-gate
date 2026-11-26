@@ -116,7 +116,7 @@ $1
   [ -z "${3:-}" ] || assert_match "$(grep '^structured_report|' "$OUTD/checks.txt")" "$3" "$2: motivo"
 }
 bad_block '{"kind":"quality-gate-report","schema":1,"verdict":"PASS",' "JSON malformado" 'malformado'
-bad_block '{"kind":"quality-gate-report","schema":2,"verdict":"PASS","risk":"low","evidence":{"provider":"none","reason":"x"},"review":{"status":"not_required"}}' "esquema no soportado" 'schema no soportado'
+bad_block '{"kind":"quality-gate-report","schema":3,"verdict":"PASS","risk":"low","evidence":{"provider":"none","reason":"x"},"review":{"status":"not_required"}}' "esquema no soportado" 'schema no soportado'
 bad_block '{"kind":"quality-gate-report","schema":1,"verdict":"PASS","risk":"low","evidence":{"provider":"none","reason":"x"}}' "campo review ausente" 'review'
 bad_block '{"kind":"quality-gate-report","schema":1,"verdict":"PASS","risk":"low","evidence":{"provider":"qg","status":"valid"},"review":{"status":"not_required"}}' "evidence.run_id ausente con provider=qg" 'run_id'
 bad_block '{"kind":"quality-gate-report","schema":1,"verdict":"APPROVED","risk":"low","evidence":{"provider":"none","reason":"x"},"review":{"status":"not_required"}}' "veredicto desconocido" 'verdict desconocido'

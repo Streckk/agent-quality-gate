@@ -1,4 +1,4 @@
-"""Extrae y valida el bloque estructurado del reporte de /quality-gate (esquema 1).
+"""Extrae y valida el bloque estructurado del reporte de /quality-gate (esquemas 1 y 2).
 
 Uso: python3 -I report.py <final.txt> <salida.kv>
 
@@ -6,10 +6,19 @@ El bloque es un fence ```json cuyo objeto lleva "kind": "quality-gate-report". S
 usa el último y se anota cuántos había. Este script NO decide si el reporte es verdadero: solo
 comprueba la forma. evaluate.sh contrasta las afirmaciones con qg, los registros y la traza.
 
+Esquema 1: un repositorio, objeto "evidence" en la raíz. Esquema 2 (obligatorio con varios
+repositorios): sin "evidence" en la raíz; "repos" = [{"id", "evidence"}] (1-16, ids únicos, el id es
+una etiqueta y no una ruta) y "approvals" = {"pending_required", "pending_optional"} obligatorio.
+Ambos admiten "review.followup" (done|pending|not_required); el esquema 1 admite "approvals" opcional.
+En el esquema 2 ningún texto del bloque puede contener una ruta absoluta.
+
 Salida (clave=valor):
-  block=absent|present   blocks=<n>   valid=1|0   error=<motivo>
-  verdict, risk, evidence_provider, evidence_run_id, evidence_status, evidence_fingerprint,
-  evidence_reason, review_status, review_kind, review_reason
+  block=absent|present   blocks=<n>   valid=1|0   error=<motivo>   schema=1|2
+  verdict, risk, review_status, review_kind, review_reason, review_followup,
+  approvals_pending_required, approvals_pending_optional (vacíos si no se declaran)
+  repos=<n> y, por repo (i desde 1), repo.<i>.id (vacío en el esquema 1) y
+  repo.<i>.evidence_provider|evidence_run_id|evidence_status|evidence_fingerprint|evidence_reason
+  evidence_* = los del único repo (esquema 1, o esquema 2 con un solo repo); vacíos si hay varios.
 Códigos de salida: 0 = analizado (aunque el bloque sea inválido); 64 = uso; 70 = error interno.
 Solo biblioteca estándar. No ejecuta nada del reporte.
 """
@@ -18,12 +27,18 @@ import re
 import sys
 
 KIND = "quality-gate-report"
-SUPPORTED_SCHEMAS = (1,)
+SUPPORTED_SCHEMAS = (1, 2)
 VERDICTS = ("PASS", "PASS WITH LIMITATIONS", "FAIL", "BLOCKED", "NOT VERIFIED")
 RISKS = ("low", "medium", "high")
 QG_STATUSES = ("valid", "failed", "blocked", "incomplete", "stale", "missing")
 REVIEW_STATUSES = ("done", "skipped", "not_required")
 REVIEW_KINDS = ("review", "adversarial")
+FOLLOWUPS = ("done", "pending", "not_required")
+REPO_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+MAX_REPOS = 16
+# Ruta absoluta dentro de un texto: /a/b (dos segmentos o más), ~/… o C:\…
+ABS_PATH = re.compile(r"(^|[\s\"'(=:,;])(/[^\s/]+/[^\s]|~/|[A-Za-z]:[\\/])")
+EV_KEYS = ("provider", "run_id", "status", "fingerprint", "reason")
 RUN_ID = re.compile(r"^(cc|qg)-[A-Za-z0-9][A-Za-z0-9-]{5,120}$")
 FINGERPRINT = re.compile(r"^sha(1|256):[0-9a-f]{40,64}$")
 MAX_TEXT = 200
@@ -54,6 +69,49 @@ def enum(obj, key, allowed, required=True):
     return v
 
 
+def evidence(ev, where):
+    if not isinstance(ev, dict):
+        raise Invalid(f"falta el objeto {where}")
+    out = {k: "" for k in EV_KEYS}
+    prov = enum(ev, "provider", ("qg", "none"))
+    out["provider"] = prov
+    if prov == "qg":
+        rid = text(ev, "run_id", True)
+        if not RUN_ID.match(rid):
+            raise Invalid(f"{where}.run_id con formato inválido")
+        out["run_id"] = rid
+        out["status"] = enum(ev, "status", QG_STATUSES)
+        fp = text(ev, "fingerprint", False)
+        if fp and not FINGERPRINT.match(fp):
+            raise Invalid(f"{where}.fingerprint con formato inválido")
+        out["fingerprint"] = fp
+    else:
+        out["reason"] = text(ev, "reason", True)
+        for k in ("run_id", "status", "fingerprint"):
+            if k in ev:
+                raise Invalid(f"{where}.{k} no admitido con provider=none")
+    return out
+
+
+def count(obj, key):
+    v = obj.get(key)
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise Invalid(f"approvals.{key} debe ser un entero ≥ 0")
+    return str(v)
+
+
+def strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from strings(v)
+
+
 def validate(doc):
     out = {}
     if not isinstance(doc, dict):
@@ -63,28 +121,48 @@ def validate(doc):
         raise Invalid("schema ausente o no entero")
     if schema not in SUPPORTED_SCHEMAS:
         raise Invalid(f"schema no soportado: {schema}")
+    out["schema"] = str(schema)
     out["verdict"] = enum(doc, "verdict", VERDICTS)
     out["risk"] = enum(doc, "risk", RISKS)
-    ev = doc.get("evidence")
-    if not isinstance(ev, dict):
-        raise Invalid("falta el objeto evidence")
-    prov = enum(ev, "provider", ("qg", "none"))
-    out["evidence_provider"] = prov
-    if prov == "qg":
-        rid = text(ev, "run_id", True)
-        if not RUN_ID.match(rid):
-            raise Invalid("evidence.run_id con formato inválido")
-        out["evidence_run_id"] = rid
-        out["evidence_status"] = enum(ev, "status", QG_STATUSES)
-        fp = text(ev, "fingerprint", False)
-        if fp and not FINGERPRINT.match(fp):
-            raise Invalid("evidence.fingerprint con formato inválido")
-        out["evidence_fingerprint"] = fp
+    repos = []
+    if schema == 1:
+        if "repos" in doc:
+            raise Invalid("repos solo se admite en el esquema 2")
+        repos.append(("", evidence(doc.get("evidence"), "evidence")))
     else:
-        out["evidence_reason"] = text(ev, "reason", True)
-        for k in ("run_id", "status", "fingerprint"):
-            if k in ev:
-                raise Invalid(f"evidence.{k} no admitido con provider=none")
+        if "evidence" in doc:
+            raise Invalid("evidence en la raíz no se admite en el esquema 2 (va en repos[].evidence)")
+        rl = doc.get("repos")
+        if not isinstance(rl, list) or not 1 <= len(rl) <= MAX_REPOS:
+            raise Invalid(f"repos debe ser una lista de 1 a {MAX_REPOS} repositorios")
+        seen = set()
+        for i, r in enumerate(rl):
+            if not isinstance(r, dict):
+                raise Invalid(f"repos[{i}] no es un objeto")
+            rid = r.get("id")
+            if not isinstance(rid, str) or not REPO_ID.match(rid):
+                raise Invalid(f"repos[{i}].id inválido (una etiqueta corta, no una ruta)")
+            if rid in seen:
+                raise Invalid(f"repos: id duplicado {rid}")
+            seen.add(rid)
+            repos.append((rid, evidence(r.get("evidence"), f"repos[{i}].evidence")))
+        for t in strings(doc):
+            if ABS_PATH.search(t):
+                raise Invalid("ruta absoluta en el bloque de esquema 2 (los repositorios se identifican por id)")
+    out["repos"] = str(len(repos))
+    for i, (rid, ev) in enumerate(repos, 1):
+        out[f"repo.{i}.id"] = rid
+        for k in EV_KEYS:
+            out[f"repo.{i}.evidence_{k}"] = ev[k]
+    for k in EV_KEYS:
+        out[f"evidence_{k}"] = repos[0][1][k] if len(repos) == 1 else ""
+    ap = doc.get("approvals")
+    out["approvals_pending_required"] = out["approvals_pending_optional"] = ""
+    if ap is not None or schema == 2:
+        if not isinstance(ap, dict):
+            raise Invalid("falta el objeto approvals (pending_required, pending_optional)")
+        out["approvals_pending_required"] = count(ap, "pending_required")
+        out["approvals_pending_optional"] = count(ap, "pending_optional")
     rv = doc.get("review")
     if not isinstance(rv, dict):
         raise Invalid("falta el objeto review")
@@ -92,6 +170,7 @@ def validate(doc):
     out["review_status"] = st
     out["review_kind"] = enum(rv, "kind", REVIEW_KINDS, required=(st == "done"))
     out["review_reason"] = text(rv, "reason", st == "skipped")
+    out["review_followup"] = enum(rv, "followup", FOLLOWUPS, required=False)
     return out
 
 
