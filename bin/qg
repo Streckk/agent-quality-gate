@@ -141,18 +141,30 @@ qg_check_dir() {
 # Define QG_FP, QG_FP_INDEX (lo que entraría en un commit) y QG_HEAD.
 # La huella es una instantánea: si otro proceso crea o borra archivos mientras `git add` los
 # recorre ("unable to stat"), se reintenta. Solo se informa el error si fallan todos los intentos.
+# Cada intento falla de forma independiente (~15-20 % con un archivo que se crea y borra sin parar),
+# así que con 5 intentos quedaba una probabilidad residual (~1e-4 por cálculo) de error espurio. Los
+# errores de archivo desaparecido tienen un presupuesto mayor (12 intentos); los demás siguen en 5.
 qg_fp_compute() {
-  local attempt QG_FP_QUIET=1
-  for attempt in 1 2 3 4 5; do
-    [ "$attempt" = 5 ] && QG_FP_QUIET=0
+  local attempt=1 limit
+  QG_FP_ERR=""
+  while :; do
     qg_fp_compute_once && return 0
-    sleep "0.$attempt" 2>/dev/null || sleep 1
+    limit=5
+    case $QG_FP_ERR in
+      *"unable to stat"*|*"unable to index file"*|*"No such file or directory"*) limit=12 ;;
+    esac
+    [ "$attempt" -ge "$limit" ] && break
+    if [ "$attempt" -lt 5 ]; then sleep "0.$attempt" 2>/dev/null || sleep 1
+    else sleep 0.2 2>/dev/null || sleep 1; fi
+    attempt=$((attempt + 1))
   done
+  [ -z "$QG_FP_ERR" ] || qg_err "no se pudo calcular la huella: $QG_FP_ERR"
   return 1
 }
 
 qg_fp_compute_once() {
   local tmp idx fmt wt it empty
+  QG_FP_ERR=""
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/qg-fp.XXXXXX") || return 1
   mkdir "$tmp/obj" || { rm -rf "$tmp"; return 1; }
   idx=$(git rev-parse --git-path index) || { rm -rf "$tmp"; return 1; }
@@ -189,7 +201,7 @@ EOF_FILTERS
          git ${nf[@]+"${nf[@]}"} write-tree --missing-ok 2>>"$tmp/err")
   local rc=$?
   if [ $rc -ne 0 ] || [ -z "$wt" ]; then
-    [ "${QG_FP_QUIET:-0}" = 1 ] || qg_err "no se pudo calcular la huella: $(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')"
+    QG_FP_ERR=$(head -n 3 "$tmp/err" 2>/dev/null | tr '\n' ' ')
     rm -rf "$tmp"; return 1
   fi
   rm -rf "$tmp"
