@@ -78,6 +78,8 @@ El run-id de la sesión es `cc-<session_id>`. Lo devuelve `qg session id` dentro
 | Commit con `Co-Authored-By` u otro trailer de IA (hooks activos) | `deny` |
 | Codex no está instalado o no ha iniciado sesión | revisión `skipped (unavailable)`. En riesgo `medium`/`high`, el veredicto máximo es `PASS WITH LIMITATIONS`. Todo lo demás funciona igual |
 | Proyecto sin Git | no hay huella ni `qg`. La skill trabaja en modo sin `qg` y lo declara (`provider: none`) |
+| El cambio abarca dos repos (p. ej. backend y frontend) | `qg` en cada repo con el mismo run-id; el reporte usa el esquema 2, una tabla por repo, y el veredicto es el del peor repo |
+| `qg classify` marca como `writes-source` algo que no escribe | la skill solo lo trata como menos grave si cita el `motivo` y la evidencia que lo contradice (línea del script o semántica documentada de la bandera); si no, pide aprobación |
 | Herramienta del proyecto no instalada | verificación `blocked` con motivo. La skill no instala nada sin tu aprobación |
 
 ## 5. Desactivar y volver atrás

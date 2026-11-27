@@ -10,6 +10,7 @@ Por orden de preferencia:
 2. Si hay cambios sin commitear: `git status --short --untracked-files=all` y `git diff --stat` (+ `--cached`).
 3. Si el working tree está limpio y la rama no es la principal: `git diff --stat <base>...HEAD`, donde `<base>` es la rama principal detectada (`git symbolic-ref refs/remotes/origin/HEAD`, o `main`/`master` si existen).
 4. Si no es un repositorio Git: pide al usuario el alcance; no revises todo el disco.
+5. **Varios repositorios** (p. ej. backend y frontend en repos Git distintos, aunque estén en carpetas hermanas): aplica los pasos 1–3 **en cada repo** por separado, con su propia base. Cada repo tiene su huella, sus verificaciones y su fila en el reporte (esquema 2, [report-format](report-format.md)). Un repo hermano que el cambio no toca queda fuera del alcance y se dice.
 
 Anota los archivos tocados: determinan qué paquetes/verificaciones son relevantes.
 
@@ -44,7 +45,7 @@ Reglas:
 - Si dudas de que un comando sea seguro (scripts con `deploy`, `migrate`, `seed`, `publish`, `release`, acceso a red o a datos reales), **no lo ejecutes**: márcalo `skipped` y explícalo. Lee el script antes si hace falta.
 - Comandos que requieren servicios externos (BD, docker, credenciales) → solo si el entorno ya los tiene y el usuario lo autoriza; si no, `blocked`.
 
-**Efectos secundarios (con `qg`):** pasa cada candidata por `qg classify -- <comando>` ([evidence-qg](evidence-qg.md) §4b) y anota la clase en la tabla de verificaciones (`read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects`, `unknown`). Las clases `installs-dependencies`, `external-side-effects` y `unknown` con indicios externos piden aprobación antes de ejecutar. Para evitar instalaciones implícitas, usa las formas que el propio gestor documente y solo si existen; no inventes flags. Sin `qg`, lee el script y aplica el mismo criterio.
+**Efectos secundarios (con `qg`):** pasa cada candidata por `qg classify -- <comando>` ([evidence-qg](evidence-qg.md) §4b) y anota la clase en la tabla de verificaciones (`read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects`, `unknown`). Las clases `writes-source`, `installs-dependencies`, `external-side-effects` y `unknown` con indicios externos piden aprobación antes de ejecutar; `read-only` y `writes-generated` no. Si crees que `classify` exagera (falso positivo), lee su `motivo` y el script, y aplica evidence-qg §4b. Para evitar instalaciones implícitas, usa las formas que el propio gestor documente y solo si existen; no inventes flags. Sin `qg`, lee el script y aplica el mismo criterio.
 
 Clasifica cada verificación como **obligatoria** (CI la exige, la config la marca `required`, o es lint/tipos/tests del área afectada) u **opcional**.
 
@@ -55,6 +56,8 @@ Comprueba disponibilidad real, no la documentación:
 - **Codex**: ver [agent-evals](agent-evals.md#1-detectar-codex).
 - **Graphify**: `command -v graphify` o skill disponible en la sesión.
 - **Superpowers / frontend-design**: aparecen en la lista de skills de la sesión. Solo se mencionan; esta skill no las invoca por su cuenta.
+
+Ninguna es obligatoria. Si falta alguna, la puerta sigue con lo disponible y declara la limitación en el reporte: sin Codex, `review: skipped (unavailable: <motivo>)` (con sus efectos en el veredicto, agent-evals §7); sin `qg`, `Evidencia: sin qg (<motivo>)`; sin Graphify, el análisis de dependientes se hace leyendo el código y se dice si el cambio tiene dependientes no evidentes. No instales ninguna para completar la puerta.
 - **`qg`** (evidencia ejecutable): detección, compatibilidad (`qg version --json`, interfaz ≥ 2), run-id y `qg require` en [evidence-qg](evidence-qg.md) §1–3. Declara con `qg require` **todas** las verificaciones obligatorias que salgan de este descubrimiento.
 
 ## 5. Nivel de riesgo

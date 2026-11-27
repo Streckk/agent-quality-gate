@@ -152,6 +152,7 @@ Sesiones (interfaz 2):
 - Motivo del cambio: con un único `required` por worktree, una sesión podía sobrescribir los requisitos de otra concurrente y hacer que esta obtuviera un `valid` falso con un conjunto menor. Lo demuestran las pruebas de `tests/core/test_sessions.sh`.
 - El código es compartido: si una sesión modifica el worktree, la evidencia de **todas** queda `stale`.
 - `qg gc` elimina las sesiones sin actividad desde hace más de `QG_SESSION_DAYS` días (30 por defecto).
+- **Varios repositorios:** el estado vive en cada repo (`.git/quality-gate/`). Un mismo run-id sirve en todos (`qg -C <repo> require|run|status --run-id X`), y cada repo conserva su propia huella: editar uno deja `stale` solo su evidencia. El reporte usa el esquema 2 con el `status` de cada repo.
 
 Seguridad de rutas:
 
@@ -223,7 +224,7 @@ Para repos con errores de TypeScript preexistentes. La línea base es un archivo
 
 `qg classify [--json] -- <comando>` dice, sin ejecutar nada, si una verificación es `read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects` o `unknown`. Lee `package.json` (scripts, un nivel de indirección), `Makefile`, archivos de shell, `.npmrc` y `pnpm-workspace.yaml`; gana la coincidencia más grave y lo que no puede inspeccionar es `unknown`, nunca `read-only`.
 
-**Es una heurística:** hay falsos `read-only` conocidos (por ejemplo `-bu` agrupado o `--updateSnapshot=true`). `qg run` no cambia: sigue detectando modificaciones durante la ejecución (`changed_during_run`). La skill lo usa en Discover para pedir aprobación antes de ejecutar instalaciones, efectos externos o comandos desconocidos.
+**Es una heurística:** puede dar falsos `read-only` con herramientas o banderas que no conoce. Un grupo de banderas cortas con `u` (`-cu`, `-uw`) cuenta como actualización; en `go`, que no agrupa banderas, `-run`, `-count`, `-timeout` o `-cpu` no cuentan, y sí `-u` y la convención de archivos golden (`-update`, `-update-golden`, `-golden`). `qg run` no cambia: sigue detectando modificaciones durante la ejecución (`changed_during_run`). La skill lo usa en Discover para pedir aprobación antes de ejecutar comandos que escriben fuentes, instalaciones, efectos externos o comandos desconocidos.
 
 ## 4b. Descartar evidencia (`qg reject`) y compatibilidad (`qg version`)
 

@@ -100,7 +100,7 @@ qg status        # valid | failed | blocked | incomplete | stale | missing
 qg require --run-id mi-sesion lint unit       # requisitos y evidencia aislados por sesión
 ```
 
-**Integrado en la skill:** si `qg` está disponible (en el `PATH` o junto a la skill instalada por symlink) y su interfaz es compatible, `/quality-gate` sigue el flujo `qg require → qg run → qg status` con un run-id por invocación, y el reporte se basa en esa evidencia. `valid` permite aprobar, pero no aprueba por sí solo. Sin `qg`, la skill se comporta como en v0.1 y lo indica. Ver [evidence-qg.md](skills/quality-gate/references/evidence-qg.md).
+**Integrado en la skill:** si `qg` está disponible (en el `PATH` o junto a la skill instalada por symlink) y su interfaz es compatible, `/quality-gate` sigue el flujo `qg require → qg run → qg status` con el run-id de la sesión (`cc-<session_id>`), y el reporte se basa en esa evidencia. `valid` permite aprobar, pero no aprueba por sí solo. Sin `qg`, la skill se comporta como en v0.1 y lo indica. Ver [evidence-qg.md](skills/quality-gate/references/evidence-qg.md).
 
 Diseño, límites y correspondencia con los veredictos en [docs/evidencia.md](docs/evidencia.md). Validación en [docs/validacion-v0.2.0-dev.md](docs/validacion-v0.2.0-dev.md).
 

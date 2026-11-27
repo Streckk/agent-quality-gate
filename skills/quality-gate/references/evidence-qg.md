@@ -51,6 +51,16 @@ Después de descubrir y clasificar las verificaciones:
 - `check-id`: el `id` de `.agent/verification.yaml` o un nombre corto del script (`[A-Za-z0-9._-]`, máx. 64).
 - Sin obligatorias declaradas, `qg status` nunca da `valid`.
 
+### 3a. Varios repositorios
+
+`qg` trabaja repo a repo: la huella, los requisitos y los registros viven en cada repositorio. Con un alcance de varios repos:
+
+- Usa el **mismo run-id** de la sesión en todos (`--run-id <ID>`); no hace falta uno por repo.
+- Resuelve la huella (`fingerprint`) y declara las obligatorias **en cada repo** con su `-C`: `"$QG" -C <backend> require --run-id <ID> lint unit` y `"$QG" -C <frontend> require --run-id <ID> typecheck unit`.
+- Ejecuta cada verificación con el `-C` del repo al que pertenece. Las huellas son independientes: editar un repo deja `stale` solo la evidencia de ese repo.
+- Antes del reporte, consulta `status` en **cada** repo (§7) y usa el esquema 2 de [report-format](report-format.md), con el `status` y la huella de cada uno. El veredicto es el del peor repo.
+- Un repo que no es Git o sin `qg` compatible va en modo sin `qg` (§8) con `provider: none`; los demás siguen con `qg`.
+
 ## 4. Ejecutar (`qg run`) (Verify)
 
 ```bash
@@ -122,6 +132,9 @@ No ejecuta nada: lee `package.json` (scripts), `Makefile`, archivos de shell, `.
 
 - Gana la coincidencia más grave. Lo que no se puede inspeccionar (script inexistente, más de un nivel de indirección, JSON ilegible) es `unknown`, nunca `read-only`.
 - Monorepos: un `cd`/`pushd`/`popd` dentro del comando o del script, o un gestor con `-C`/`--prefix`/`--dir`/`--cwd` o `-w`/`--workspace*`/`--filter`/`-F`/`-r`, dan `unknown` (`cwd_change` / `workspace`): el script real no es el del `package.json` leído. Sin esas opciones se usa el `package.json` más cercano subiendo desde el directorio actual hasta la raíz del repo. Para clasificar el script de un paquete, ejecuta `classify` con `-C <paquete>`.
+- La salida incluye una o más líneas `motivo:` (en `--json`, `reasons`). Cítalas en la tabla cuando la clase no sea `read-only`.
+- Banderas de un guion: un grupo de banderas cortas con `u` (`-u`, `-cu`, `-uw`) cuenta como actualización (snapshots). En `go` no: Go no agrupa banderas, y `-run`, `-count`, `-timeout` o `-cpu` son nombres largos; allí solo cuentan `-u` literal y la convención de archivos golden (`-update`, `-update-golden`, `-golden`).
+- **Falsos positivos.** Si crees que la clase es más grave de lo que el comando hace, no la rebajes por intuición. Solo puedes tratarla como menos grave si puedes citar las dos cosas: el `motivo` de `classify` y la evidencia que lo contradice (la línea del script o la semántica documentada de esa bandera en esa herramienta; p. ej. `mocha -u bdd` es `--ui`, no actualiza nada). Anótalo en el reporte. Si no puedes citarla, pide aprobación. Hacia arriba (más grave) no hace falta justificar nada.
 - **Es una heurística.** Puede haber falsos `read-only` en herramientas o flags que no conoce. `qg run` sigue detectando los cambios durante la ejecución (`changed_during_run`), pero es tarde: léelo como una ayuda para decidir antes, no como una garantía.
 - Para evitar instalaciones implícitas, usa las formas que el propio gestor documente (p. ej. una opción para no instalar al ejecutar scripts), solo si existen en su documentación; no inventes flags.
 

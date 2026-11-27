@@ -77,7 +77,7 @@ qg classify -- npm run test:report
 
 `writes-generated` se ejecuta, pero se anota: el informe cambia la huella si no está ignorado por Git, y la evidencia podría quedar `stale` (`changed_during_run`). Opciones, de mejor a peor: un modo del propio proyecto que no escriba; ignorar `reports/` (un cambio del repo: se propone, no se hace sin aprobación); o declararlo en el reporte. Si la clase fuera `installs-dependencies`, `external-side-effects` o `unknown` con indicios externos, la skill pide aprobación antes de ejecutar.
 
-`qg classify` es una heurística: puede dar `read-only` a un comando con formas poco comunes de escribir (`-bu`, `--updateSnapshot=true`). Complementa a leer el script, no lo sustituye.
+`qg classify` es una heurística: puede dar `read-only` a un comando con una herramienta o una bandera que no conoce. Complementa a leer el script, no lo sustituye.
 
 ## 5. Una ejecución desde caché
 
