@@ -1895,8 +1895,19 @@ cl_seg() {   # cl_seg <depth> <palabras…>
     case $w in
       --fix|--fix=*|--write|--write=*|-u|--update|--update=*|--update-*|--updateSnapshot|--updateSnapshot=*|--snapshot-update|--force-regen|--apply|--apply-*)
         cl_add 3 fix_flag "$w en los argumentos" ;;
-      -[A-Za-z]*u*) [[ $w =~ ^-[A-Za-z]*u[A-Za-z]*$ ]] && cl_add 3 fix_flag "$w (incluye -u) en los argumentos" ;;
       -w) case $tool in npm|pnpm|yarn|bun) ;; *) cl_add 3 fix_flag "-w en los argumentos" ;; esac ;;
+      # Grupo de banderas cortas con u (-cu, -uw). Go no agrupa: sus banderas de un guion son
+      # nombres largos (-run, -count, -timeout, -cpu); allí solo cuenta -u literal (arriba) y la
+      # convención de archivos golden (go test ./... -update / -update-golden / -golden).
+      -[A-Za-z]*)
+        case $tool in
+          go)
+            case $w in
+              -update|-update=*|-update-*|-update_*|-updategolden|-updategolden=*|-golden|-golden=*)
+                cl_add 3 fix_flag "$w (regenera archivos golden) en los argumentos" ;;
+            esac ;;
+          *) [[ $w =~ ^-[A-Za-z]*u[A-Za-z]*$ ]] && cl_add 3 fix_flag "$w (incluye -u) en los argumentos" ;;
+        esac ;;
     esac
     if [[ $w =~ ^[0-9\&]*\>[\>\|]?(.*)$ ]]; then
       rd=${BASH_REMATCH[1]}
