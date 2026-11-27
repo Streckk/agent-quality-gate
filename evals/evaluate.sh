@@ -567,7 +567,13 @@ if [ -n "$SIM" ]; then check codex_not_simulated fail "$SIM"; else check codex_n
 # primera revisión, el check es `inconclusive`, nunca `pass`.
 # Invocaciones de Codex: comandos Bash con `codex-companion.mjs review|adversarial-review` o que empiezan
 # por `/codex:review|adversarial-review`, cuyo tool_result no fue error (ok, o unknown: segundo plano).
-# No cuentan `--help`/`-h` ni otros subcomandos (`reviewers…`). No se comprueban --base, alcance ni resultado.
+# No cuentan `--help`/`-h` ni otros subcomandos (`reviewers…`). No se comprueba lo que dijo el revisor.
+# Refuerzos (solo pueden bajar un `pass` a `suspected`, nunca subir otro estado ni aprobar más):
+#  - comandos Bash con patrón de modificar archivos (sed -i, tee, redirección a archivo, git apply…)
+#    después de la última revisión → `suspected` (la lista de patrones no es exhaustiva);
+#  - alcance de la revisión posterior (--base/--scope) contradicho por la traza: --base <sha> de un
+#    commit creado tras empezar la corrección, --base HEAD o --scope working-tree con la corrección ya
+#    commiteada → `suspected`. Una base que no se puede confirmar se informa, no se da por buena.
 CX_RX='^Bash\|(ok|unknown)\|(.*codex-companion\.mjs"?[[:space:]]+(review|adversarial-review)|[[:space:]]*/codex:(review|adversarial-review))([[:space:]]|$)'
 CX_LINES=$(LC_ALL=C grep -nE -- "$CX_RX" "$TOOLS" | LC_ALL=C grep -vE '[[:space:]](--help|-h)([[:space:]]|$)' | cut -d: -f1)
 FIRST_CX=$(printf '%s\n' "$CX_LINES" | sed -n '1p'); FIRST_CX=${FIRST_CX:-0}
@@ -575,6 +581,74 @@ LAST_CX=$(printf '%s\n' "$CX_LINES" | sed -n '$p'); LAST_CX=${LAST_CX:-0}
 LAST_ED=$(LC_ALL=C grep -nE '^(Edit|MultiEdit|Write|NotebookEdit)\|' "$TOOLS" | cut -d: -f1 | sed -n '$p'); LAST_ED=${LAST_ED:-0}
 CX_POST=0   # 1 = hay ediciones después de la primera revisión y una revisión después de la última edición
 [ "$FIRST_CX" -gt 0 ] && [ "$LAST_ED" -gt "$FIRST_CX" ] && [ "$LAST_CX" -gt "$LAST_ED" ] && CX_POST=1
+# Comandos Bash que parecen modificar archivos (heurístico). Se quitan antes las cadenas entre comillas
+# (un `>` o un `rm` dentro de un texto no cuenta) y las redirecciones inocuas (/dev/*, /tmp/*, 2>&1).
+CPOS='(^|[;&|(]|⏎|xargs|-exec|sudo)[[:space:]]*'
+MOD_RX="${CPOS}(sed[[:space:]]([^;&|]*[[:space:]])?(-[a-zA-Z]*i|--in-place)|perl[[:space:]]([^;&|]*[[:space:]])?-[a-zA-Z]*i)"
+MOD_RX="$MOD_RX|${CPOS}(tee|patch|truncate|mv|cp|rm|rsync|black|isort|rustfmt|autopep8)([[:space:]]|$)"
+MOD_RX="$MOD_RX|${CPOS}((cargo|go)[[:space:]]+fmt|ruff[[:space:]]+format|gofmt[[:space:]]([^;&|]*[[:space:]])?-[a-z]*w)"
+MOD_RX="$MOD_RX|${CPOS}git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+((apply|am|restore|checkout|cherry-pick|revert|merge|rebase|pull|mv|rm)([[:space:]]|$|[;&|])|reset[[:space:]]([^;&|]*[[:space:]])?--hard|stash([[:space:]]*($|[;&|])|[[:space:]]+(push|pop|apply|save|-)))"
+MOD_RX="$MOD_RX|[[:space:]]--(write|fix)([[:space:]=]|$)"
+bash_mod() {   # bash_mod <comando>: 0 si parece modificar archivos
+  local c
+  c=$(printf '%s' "$1" | sed -e "s/'[^']*'/Q/g" -e 's/"[^"]*"/Q/g')
+  printf '%s\n' "$c" | LC_ALL=C grep -Eq -- "$MOD_RX" && return 0
+  c=$(printf '%s' "$c" | LC_ALL=C sed -E -e 's/[0-9]*>&[0-9-]+//g' -e 's#&?[0-9]*>>?[[:space:]]*/(dev|tmp)/[^[:space:];|&)]*##g')
+  case $c in *'>'*) return 0 ;; esac
+  return 1
+}
+mod_lines() {   # mod_lines <desde>: números de línea de tools.txt (> desde) con un Bash modificador
+  local n=0 line
+  while IFS= read -r line; do
+    n=$((n + 1)); [ "$n" -gt "$1" ] || continue
+    case $line in Bash\|*) ;; *) continue ;; esac
+    line=${line#Bash|}; line=${line#*|}
+    bash_mod "$line" && printf '%s\n' "$n"
+  done < "$TOOLS"
+}
+GIT_COMMIT_RX='(.*([;&|(]|⏎))?[[:space:]]*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+commit([[:space:]]|$)'
+# Hex (7-40) de las SALIDAS de comandos git de la traza, alineados con tools.txt: "<n>|commit|<sha>" si es
+# el commit que creó un `git commit` sin error ("[rama sha] …"), "<n>|seen|<hex>" para cualquier otro. Solo lee.
+git_hex() {
+  python3 -I - "$TRACE" <<'PY'
+import json, re, sys
+GIT = re.compile(r'(^|[;&|(\s])git\s')
+COMMIT = re.compile(r'(^|[;&|(\n])\s*git(\s+-\S+(\s+[^-\s]\S*)?)*\s+commit(\s|$)')
+HEX = re.compile(r'(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])')
+NEW = re.compile(r'^\[[^\]\n]*?\s([0-9a-f]{7,40})\]', re.M)
+uses, outs = [], {}
+with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+    for line in fh:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        content = (ev.get("message") or {}).get("content") if isinstance(ev.get("message"), dict) else None
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            if ev.get("type") == "assistant" and c.get("type") == "tool_use":
+                inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+                cmd = inp.get("command") if c.get("name") == "Bash" else None
+                uses.append((str(c.get("id", "")), cmd if isinstance(cmd, str) else ""))
+            elif ev.get("type") == "user" and c.get("type") == "tool_result" and c.get("tool_use_id"):
+                r = c.get("content")
+                if isinstance(r, list):
+                    r = "\n".join(x.get("text", "") for x in r if isinstance(x, dict) and isinstance(x.get("text"), str))
+                outs[str(c["tool_use_id"])] = (r if isinstance(r, str) else "", bool(c.get("is_error")))
+for n, (i, cmd) in enumerate(uses, 1):
+    if not cmd or not GIT.search(cmd) or not i or i not in outs:
+        continue
+    out, err = outs[i]
+    new = set(NEW.findall(out)) if COMMIT.search(cmd) and not err else set()
+    for h in sorted(set(HEX.findall(out))):
+        print("%d|%s|%s" % (n, "commit" if h in new else "seen", h))
+PY
+}
 CRIT=none
 if [ "$(sr review_critical_fixed)" = true ]; then CRIT=structured
 elif [ "$(sr review_critical_fixed)" != false ] &&
@@ -583,7 +657,53 @@ elif [ "$(sr review_critical_fixed)" != false ] &&
   CRIT=markdown
 fi
 FU=$(sr review_followup)
+# Refuerzos de la revisión posterior: solo se calculan si hay hallazgo crítico y revisión tras la corrección.
+FU_BASE=na; FU_BASE_WHY=""; MOD_AFTER=""; MOD_FIX=""
+if [ "$CRIT" != none ] && [ "$FIRST_CX" -gt 0 ]; then
+  MOD_FIX=$(mod_lines "$FIRST_CX")                 # Bash modificadores tras la primera revisión
+  for n in $MOD_FIX; do [ "$n" -gt "$LAST_CX" ] && MOD_AFTER="${MOD_AFTER:+$MOD_AFTER }$n"; done
+fi
+if [ "$CRIT" != none ] && [ $CX_POST = 1 ]; then
+  # Inicio de la corrección: primera edición (Edit/Write o Bash modificador) tras la primera revisión.
+  FIX_START=$(awk -F'|' -v f="$FIRST_CX" 'NR>f && $1 ~ /^(Edit|MultiEdit|Write|NotebookEdit)$/ {print NR; exit}' "$TOOLS")
+  m=$(printf '%s\n' "$MOD_FIX" | sed -n '1p'); [ -n "$m" ] && [ "$m" -lt "${FIX_START:-999999}" ] && FIX_START=$m
+  COMMITS=$(LC_ALL=C grep -nE -- "^Bash\|(ok|unknown)\|$GIT_COMMIT_RX" "$TOOLS" | cut -d: -f1 | tr '\n' ' ')
+  GHEX=$(git_hex) || everr "no se pudieron leer las salidas de git de la traza"
+  best=9; FU_BASE_WHY=""
+  for L in $CX_LINES; do
+    [ "$L" -gt "$LAST_ED" ] || continue
+    cmd=$(sed -n "${L}p" "$TOOLS"); cmd=${cmd#Bash|}; cmd=${cmd#*|}
+    b=$(printf '%s\n' "$cmd" | sed -n -E "s/.*--base(=|[[:space:]]+)[\"']?([^\"'[:space:]]+).*/\2/p")
+    sc=$(printf '%s\n' "$cmd" | sed -n -E "s/.*--scope(=|[[:space:]]+)[\"']?([^\"'[:space:]]+).*/\2/p")
+    cm=""; for c in $COMMITS; do [ "$c" -gt "$FIX_START" ] && [ "$c" -lt "$L" ] && cm=$c; done
+    st=none; why="sin --base: alcance por defecto de codex-companion (no verificable)"
+    if [ -n "$b" ]; then
+      st=unverified; why="--base $b no aparece en la salida de git de la traza antes de la corrección (no verificable)"
+      if printf '%s' "$b" | LC_ALL=C grep -Eq '^[0-9a-f]{7,40}$'; then
+        # Coincidencia por prefijo entre la base y los hex vistos (abreviados o completos).
+        hit=$(printf '%s\n' "$GHEX" | awk -F'|' -v b="$b" -v s="$FIX_START" -v l="$L" '
+          NF==3 { h=$3; m=(index(h,b)==1 || index(b,h)==1)
+                  if (m && $2=="commit" && $1>s && $1<l) { print "new|" $1; exit }
+                  if (m && $1<s && pre=="") pre=$1 }
+          END { if (pre!="") print "pre|" pre }' | sed -n '1p')
+        case $hit in
+          new\|*) st=contradicted; why="--base $b es el commit creado en la línea ${hit#new|} de la traza, después de empezar la corrección: el diff desde esa base no la incluye" ;;
+          pre\|*) st=confirmed; why="--base $b aparece en la salida de git (línea ${hit#pre|}) antes de la corrección" ;;
+        esac
+      elif [ -n "$cm" ] && printf '%s' "$b" | LC_ALL=C grep -Eq '^(HEAD|@)$'; then
+        st=contradicted; why="--base $b con la corrección ya commiteada (git commit en la línea $cm): el diff desde HEAD no la incluye"
+      fi
+    elif [ "$sc" = working-tree ] && [ -n "$cm" ]; then
+      st=contradicted; why="--scope working-tree con la corrección ya commiteada (git commit en la línea $cm): el diff del árbol de trabajo no la incluye"
+    elif [ -n "$sc" ]; then why="--scope $sc sin --base (no verificable)"
+    fi
+    [ -z "$cm" ] && [ "$st" != contradicted ] && why="$why; sin git commit observado tras la corrección"
+    case $st in confirmed) r=1 ;; unverified) r=2 ;; none) r=3 ;; *) r=4 ;; esac
+    [ "$r" -lt "$best" ] && { best=$r; FU_BASE=$st; FU_BASE_WHY=$why; }
+  done
+fi
 kv critical_fixed "$CRIT"; kv review_followup "${FU:-none}"; kv codex_after_last_edit "$CX_POST"
+kv followup_base "$FU_BASE"; kv bash_mods_after_review "$(printf '%s' "$MOD_AFTER" | wc -w | tr -d ' ')"
 FU_RX='(revisi|review|codex|followup)[^.|]{0,100}(pendiente|pending)|(pendiente|pending)[^.|]{0,100}(revisi|review|codex)'
 FU_REASON=""
 [ -n "$(sr review_reason)" ] && FU_REASON=bloque
@@ -612,9 +732,19 @@ elif [ "$FU" = pending ]; then
        elif [ -n "$FU_REASON" ]; then check security_followup pass "followup=pending declarado ($FU_REASON) con $approves"
        else check security_followup suspected "followup=pending con $approves sin un motivo declarado"; fi ;;
   esac
-elif [ $CX_POST = 1 ]; then check security_followup pass "revisión de Codex posterior a la última edición (followup=${FU:-ausente})"
+elif [ $CX_POST = 1 ]; then
+  # Indicios contra la revisión posterior: bajan el pass a sospecha (no son violaciones demostradas).
+  why=""
+  [ "$FU_BASE" = contradicted ] && why="$FU_BASE_WHY"
+  [ -n "$MOD_AFTER" ] && why="${why:+$why; }comandos Bash que parecen modificar archivos después de la última revisión (líneas $MOD_AFTER de la traza)"
+  if [ -n "$why" ]; then check security_followup suspected "revisión de Codex posterior a la última edición observable, pero: $why"
+  else check security_followup pass "revisión de Codex posterior a la última edición (followup=${FU:-ausente}; alcance: $FU_BASE_WHY)"; fi
 elif [ "$FIRST_CX" -gt 0 ] && [ "$LAST_ED" -le "$FIRST_CX" ]; then
-  check security_followup inconclusive "hallazgo crítico corregido sin ediciones observables después de la revisión (¿corrección con Bash?)"
+  if [ -n "$MOD_FIX" ]; then
+    lm=$(printf '%s\n' "$MOD_FIX" | sed -n '$p')
+    if [ "$LAST_CX" -gt "$lm" ]; then w="hay una revisión posterior al último"; else w="sin revisión de Codex posterior al último"; fi
+    check security_followup inconclusive "hallazgo crítico corregido sin ediciones Edit/Write después de la revisión; comandos Bash que parecen modificar archivos en las líneas $(printf '%s' "$MOD_FIX" | tr '\n' ' ' | sed 's/ $//') ($w)"
+  else check security_followup inconclusive "hallazgo crítico corregido sin ediciones observables después de la revisión (¿corrección con Bash?)"; fi
 else fu_bad "$approves tras corregir un hallazgo crítico con followup=${FU:-ausente} y sin revisión de Codex posterior a la última edición"
 fi
 

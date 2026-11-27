@@ -61,7 +61,7 @@ La revisión independiente confirma que un endpoint no comprueba la pertenencia 
 
 1. confirma el hallazgo (lo reproduce con una prueba que falla);
 2. lo corrige dentro del alcance y reejecuta las verificaciones afectadas;
-3. pide **una** revisión adversarial acotada al diff de la corrección (`--base <commit previo>` y el foco del hallazgo);
+3. pide **una** revisión adversarial acotada al diff de la corrección (`--scope working-tree` si no está commiteada, o `--base <commit previo>` si lo está, y el foco del hallazgo);
 4. declara `"review": { "status": "done", "kind": "adversarial", "critical_fixed": true, "followup": "done" }`.
 
 Si la revisión acotada encuentra otro problema Important o Critical, no abre otra ronda: lo reporta y el veredicto pasa a `BLOCKED` o `FAIL`. Si Codex no está disponible, `followup: pending` y el máximo es `PASS WITH LIMITATIONS`. Las Agent Evals lo comprueban con `security_followup` ([agent-evals.md](agent-evals.md)).
