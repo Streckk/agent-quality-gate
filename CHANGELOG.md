@@ -4,6 +4,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). V
 
 ## [Unreleased]
 
+### Corregido (estabilización)
+- **`qg classify`:** las banderas de un guion de Go (`-run`, `-count`, `-timeout`, `-cpu`) ya no se toman por `-u` agrupado (`writes-source`). En `go` solo cuentan `-u` literal y la convención de archivos golden (`-update`, `-update-golden`, `-golden`). Los grupos con la `u` primero (`-uw`) ahora sí se detectan.
+- **Huella:** más reintentos cuando un archivo desaparece durante `git add` (causa del fallo intermitente de `test_run.sh`). Mitiga, no elimina.
+- **`security_followup`:** baja un `pass` a `suspected` si hay comandos Bash que parecen modificar archivos después de la última revisión, o si el alcance de la revisión contradice la traza. `result.kv` añade `followup_base` y `bash_mods_after_review`.
+- **Skill:** la revisión acotada usa `--scope working-tree` si la corrección no está commiteada (`--base` solo ve commits); Discover y `qg` repo a repo con el mismo run-id; `writes-source` pide aprobación también en project-discovery; cuándo se puede rebajar una clase de `classify`; qué hacer si falta una integración opcional.
+- Docs: se retiran falsos `read-only` ya corregidos; el README dice run-id de la sesión.
+- Validación: [docs/validacion-v0.2.0-estabilizacion.md](docs/validacion-v0.2.0-estabilizacion.md).
+
 ### Añadido (líneas base, varios repositorios, segunda revisión y efectos secundarios)
 - **Líneas base de errores heredados** (`qg` interfaz 4): `qg run --baseline <ruta> --baseline-format typescript` compara las firmas `TSnnnn|archivo|mensaje` como multiconjunto, nunca por el total, y conserva el exit real. `qg status` marca `baseline:known=K,fixed=F`; `--json` añade `baseline` por check y `baseline_checks`. `qg baseline write` crea la línea base solo a pedido y nunca desde `qg run`. Salida irreconocible, exit inesperado o línea base ausente o corrupta → `blocked`. Limitaciones documentadas: debe envolver `tsc` directamente, la salida se muestra al terminar, rutas normalizadas respecto a la raíz (monorepos: una línea base por paquete o ejecutar desde la raíz).
 - **`qg classify`**: clase de efectos secundarios (`read-only`, `writes-generated`, `writes-source`, `installs-dependencies`, `external-side-effects`, `unknown`) sin ejecutar nada. Es una heurística con falsos `read-only` conocidos.
